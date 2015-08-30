@@ -32,7 +32,7 @@ inline Dataset create_dataset_stl(Group group, const std::string &name, const_it
   {
     size_t size = std::distance(begin, end);
     const value_type* data = &(*begin);
-    return Dataset::create_simple(group, name, create_dataspace(size), data);
+    return Dataset::create_simple(group, name, create_dataspace((int)size), data);
   }
   else
   {

@@ -1,20 +1,26 @@
 #ifndef _HDF_WRAPPER_H
 #define _HDF_WRAPPER_H
 
-#include <iostream>
 #include <exception>
+#include <iostream> // for dealing with strings in exceptions, mostly
+#include <string>// for dealing with strings in exceptions, mostly
+#include <sstream>// for dealing with strings in exceptions, mostly
+
 #include <assert.h>
 #include <vector>
-#include <sstream>
-#include <malloc.h>
+
+#if (defined __APPLE__)
+      // implement me
+#elif (defined _MSC_VER)
+      // or don't
+#elif (defined __GNUG__)
+  #include <cmalloc>
+  #include <cstdio>
+#endif
 
 #include "hdf5.h"
-#include <string.h>
-#include <cstdio>
-
 #include <boost/optional.hpp>
 
-class T;
 namespace my
 {
 
@@ -40,15 +46,40 @@ struct TagCreate {};
 
 static void disableAutoErrorReporting()
 {
-  H5Eset_auto2(H5E_DEFAULT, NULL, NULL);
+  H5Eset_auto(H5E_DEFAULT, NULL, NULL);
 };
+
+class AutoErrorReportingGuard
+{
+  void *client_data;
+  H5E_auto2_t func;
+public:
+  AutoErrorReportingGuard()
+  {
+    H5Eget_auto2(H5E_DEFAULT, &func, &client_data);
+  }
+  void disableReporting()
+  {
+  H5Eset_auto2(H5E_DEFAULT, NULL, NULL);
+  }
+  ~AutoErrorReportingGuard()
+  {
+    H5Eset_auto2(H5E_DEFAULT, func, client_data);
+  }
+};
+
 
 class Exception : public std::exception
 {
-		std::string msg;
-	public:
-		Exception(const std::string &msg_) : msg(msg_)
+    std::string msg;
+  public:
+    Exception(const std::string &msg_) : msg(msg_)
     {
+#if (defined __APPLE__)
+      // implement me
+#elif (defined _MSC_VER)
+      // or don't
+#elif (defined __GNUG__)
       char *mem;
       size_t size;
       FILE* stream = open_memstream(&mem, &size);
@@ -57,10 +88,11 @@ class Exception : public std::exception
       msg += "\n";
       msg += std::string(mem);
       free(mem);
+#endif
     }
-		Exception() : msg("unspecified error") { assert(false); }
-		~Exception() throw() {}
-		const char* what() const throw() { return msg.c_str(); }
+    Exception() : msg("unspecified error") { assert(false); }
+    ~Exception() throw() {}
+    const char* what() const throw() { return msg.c_str(); }
 };
 
 class NameLookupError : public Exception
@@ -91,7 +123,7 @@ class Object
       inc_ref();
       return *this;
     }
-	
+  
     hid_t get_id() const
     {
       return id;
@@ -106,23 +138,23 @@ class Object
         throw Exception("initialization of Object with invalid handle");
     }
     
-		void inc_ref()
-		{
-			if (id < 0) return;
-			int r = H5Iinc_ref(id);
+    void inc_ref()
+    {
+      if (id < 0) return;
+      int r = H5Iinc_ref(id);
       if (r < 0)
         throw Exception("cannot inc ref count");
-		}
-		
-		void dec_ref()
-		{
-			if (id < 0) return;
-			int r = H5Idec_ref(id);
+    }
+    
+    void dec_ref()
+    {
+      if (id < 0) return;
+      int r = H5Idec_ref(id);
       if (r < 0)
         throw Exception("cannot dec ref count");
-			if (H5Iis_valid(id) > 0)
-				id = -1;
-		}
+      if (H5Iis_valid(id) > 0)
+        id = -1;
+    }
 
     std::string get_name() const
     {
@@ -192,7 +224,6 @@ class Datatype : protected Object
       //static_assert(false, "specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
       assert(false);
       throw Exception("specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
-      return Datatype(-1, ConsFromPreset()); 
     }
     static Datatype createFixedLenString(DatatypeSelect)
     {
@@ -656,7 +687,7 @@ class Properties : protected Object
           val = org_val;
         cdims[i] = val;
       }
-      return chunked(cdims.size(), &cdims[0]);
+      return chunked((int)cdims.size(), &cdims[0]);
     }
 };
 
@@ -747,7 +778,7 @@ class File : protected Object
     using Object::get_file_name;
     using Object::get_file;
 
-    explicit File(hid_t id) : Object() { this->inc_ref(); } // a logical copy of the original given by id
+    explicit File(hid_t id) : Object() { this->inc_ref(); } // a logical copy of the original given by id, we inc reference count so the source can release its handle
     
     /*
       w = create or truncate existing file
@@ -985,7 +1016,12 @@ inline Dataset Group::open_dataset(const std::string &name)
 
 inline boost::optional<Dataset> Group::try_open_dataset(const std::string &name)
 {
-  hid_t id = H5Dopen2(this->id, name.c_str(), H5P_DEFAULT);
+  hid_t id;
+  {
+    AutoErrorReportingGuard guard;
+    guard.disableReporting();
+    id = H5Dopen2(this->id, name.c_str(), H5P_DEFAULT);
+  }
   if (id < 0) 
   {
     if (exists(name))
