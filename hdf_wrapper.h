@@ -14,8 +14,8 @@
 #elif (defined _MSC_VER)
       // or don't
 #elif (defined __GNUG__)
-  #include <cmalloc>
-  #include <cstdio>
+  #include <malloc.h>
+  #include <stdio.h>
 #endif
 
 #include "hdf5.h"
