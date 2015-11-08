@@ -776,12 +776,12 @@ class iterator : public std::iterator<std::bidirectional_iterator_tag, std::stri
 };
 
 
-iterator Group::begin()
+inline iterator Group::begin()
 {
   return iterator(0, *this);
 }
 
-iterator Group::end()
+inline iterator Group::end()
 {
   return iterator(this->size(), *this);
 }
@@ -953,7 +953,7 @@ class Dataset : public Object
     }
 
     template<class T>
-    static Dataset create_simple(Group group, const std::string &name, const Dataspace &sp, const T* data, DsCreationFlags flags = DsCreationFlags::DEFAULT_FLAGS, const Datatype &disktype = user::as_h5_datatype<T>::value(ON_DISK))
+    static Dataset create_simple(Group group, const std::string &name, const Dataspace &sp, const T* data, DsCreationFlags flags = DEFAULT_FLAGS, const Datatype &disktype = user::as_h5_datatype<T>::value(ON_DISK))
     {
       Dataset ds = Dataset::create(group, name, disktype, sp, Dataset::create_creation_properties(sp, flags));
       if (data)
@@ -1124,7 +1124,7 @@ namespace user
   template<size_t n>
   struct as_h5_datatype<char[n]>
   {
-    typedef char const CharArray[n];
+    typedef char CharArray[n];
     static inline Datatype value(DatatypeSelect sel)
     {
       return Datatype::createPod<const char*>(sel);
@@ -1142,7 +1142,7 @@ namespace user
   template<size_t n>
   struct as_h5_datatype<const char [n]>
   {
-    typedef const char const CharArray[n];
+    typedef char CharArray[n];
     static inline Datatype value(DatatypeSelect sel) { return as_h5_datatype<char[n]>::value(sel); }
     static inline void write(RW &rw, const Datatype &dt, const Dataspace &space, const CharArray *values)  { return as_h5_datatype<char[n]>::write(rw, dt, space, values); }
   };
