@@ -8,18 +8,24 @@
 
 #include <assert.h>
 #include <vector>
+#include <iterator>
 
 #if (defined __APPLE__)
-      // implement me
+      // implement nice exception messages that need string manipulation
 #elif (defined _MSC_VER)
-      // or don't
+      // here, too
 #elif (defined __GNUG__)
   #include <malloc.h>
   #include <stdio.h>
 #endif
 
 #include "hdf5.h"
-#include <boost/optional.hpp>
+
+#ifdef HDF_WRAPPER_HAS_BOOST
+  #include <boost/optional.hpp>
+#endif
+
+
 
 namespace my
 {
@@ -76,9 +82,9 @@ class Exception : public std::exception
     Exception(const std::string &msg_) : msg(msg_)
     {
 #if (defined __APPLE__)
-      // implement me
+      // implement nice exception messages that need string manipulation
 #elif (defined _MSC_VER)
-      // or don't
+      // here, too
 #elif (defined __GNUG__)
       char *mem;
       size_t size;
@@ -131,6 +137,7 @@ class Object
 
     Object() : id(-1) {}
 
+    // normally we get a new handle. Its cout needs only decreasing.
     Object(hid_t id) : id(id)
     {
       htri_t ok = H5Iis_valid(id);
@@ -138,24 +145,6 @@ class Object
         throw Exception("initialization of Object with invalid handle");
     }
     
-    void inc_ref()
-    {
-      if (id < 0) return;
-      int r = H5Iinc_ref(id);
-      if (r < 0)
-        throw Exception("cannot inc ref count");
-    }
-    
-    void dec_ref()
-    {
-      if (id < 0) return;
-      int r = H5Idec_ref(id);
-      if (r < 0)
-        throw Exception("cannot dec ref count");
-      if (H5Iis_valid(id) > 0)
-        id = -1;
-    }
-
     std::string get_name() const
     {
       std::string res;
@@ -187,6 +176,32 @@ class Object
       return H5Iis_valid(id) > 0;
     }
 
+    // references the same object as other
+    bool is_same(const Object &other) const
+    {
+      // just need to compare id's
+      return other.id == this->id;
+    }
+
+protected:
+    void inc_ref()
+    {
+      if (id < 0) return;
+      int r = H5Iinc_ref(id);
+      if (r < 0)
+        throw Exception("cannot inc ref count");
+    }
+
+    void dec_ref()
+    {
+      if (id < 0) return;
+      int r = H5Idec_ref(id);
+      if (r < 0)
+        throw Exception("cannot dec ref count");
+      if (H5Iis_valid(id) > 0)
+        id = -1;
+    }
+
 		hid_t id;
 };
 
@@ -196,7 +211,7 @@ enum DatatypeSelect {
 };
 
 
-class Datatype : protected Object
+class Datatype : public Object
 {
   private:
     friend class Attribute;
@@ -208,13 +223,7 @@ class Datatype : protected Object
         throw Exception("error initializing from prescribed data type");
     }
     Datatype(hid_t id) : Object(id) {}
-  
   public: 
-    using Object::get_id;
-    using Object::get_name;
-    using Object::is_valid;
-    using Object::get_file_name;
-    using Object::get_file;
 
     Datatype() : Object() {}
     
@@ -266,20 +275,20 @@ class Datatype : protected Object
     }
 };
 
-#define SPECIALIZE_TYPE(t, tid, dtid) \
+#define HDF5_WRAPPER_SPECIALIZE_TYPE(t, tid, dtid) \
   template<> inline Datatype Datatype::createPod<t>(DatatypeSelect sel) { return Datatype(sel == ON_DISK ? dtid : tid, ConsFromPreset()); }\
 
-SPECIALIZE_TYPE(int, H5T_NATIVE_INT, H5T_STD_I32LE)
-SPECIALIZE_TYPE(unsigned int, H5T_NATIVE_UINT, H5T_STD_U32LE)
-SPECIALIZE_TYPE(unsigned long long, H5T_NATIVE_ULLONG, H5T_STD_U64LE)
-SPECIALIZE_TYPE(long long, H5T_NATIVE_LLONG, H5T_STD_I64LE)
-SPECIALIZE_TYPE(char, H5T_NATIVE_CHAR, H5T_STD_I8LE)
-SPECIALIZE_TYPE(unsigned char, H5T_NATIVE_UCHAR, H5T_STD_U8LE)
-SPECIALIZE_TYPE(float, H5T_NATIVE_FLOAT, H5T_IEEE_F32LE)
-SPECIALIZE_TYPE(double, H5T_NATIVE_DOUBLE, H5T_IEEE_F64LE)
-SPECIALIZE_TYPE(bool, H5T_NATIVE_CHAR, H5T_STD_U8LE)
-SPECIALIZE_TYPE(unsigned long, H5T_NATIVE_ULONG, H5T_STD_U64LE)
-SPECIALIZE_TYPE(long, H5T_NATIVE_LONG, H5T_STD_I64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(int, H5T_NATIVE_INT, H5T_STD_I32LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned int, H5T_NATIVE_UINT, H5T_STD_U32LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned long long, H5T_NATIVE_ULLONG, H5T_STD_U64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(long long, H5T_NATIVE_LLONG, H5T_STD_I64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(char, H5T_NATIVE_CHAR, H5T_STD_I8LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned char, H5T_NATIVE_UCHAR, H5T_STD_U8LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(float, H5T_NATIVE_FLOAT, H5T_IEEE_F32LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(double, H5T_NATIVE_DOUBLE, H5T_IEEE_F64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(bool, H5T_NATIVE_CHAR, H5T_STD_U8LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned long, H5T_NATIVE_ULONG, H5T_STD_U64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(long, H5T_NATIVE_LONG, H5T_STD_I64LE)
 
 template<> inline Datatype Datatype::createPod<const char *>(DatatypeSelect sel)
 {
@@ -299,7 +308,10 @@ template<> inline Datatype Datatype::createPod<std::string>(DatatypeSelect sel)
 }
 
 
-
+/*
+RW abstracts away how datasets and attributes are written since both works
+the same way, afik, except for function names, e.g. H5Awrite vs H5Dwrite.
+*/
 class RW
 {
   public:
@@ -323,7 +335,7 @@ struct as_h5_datatype;
 
 
 
-class Dataspace : protected Object
+class Dataspace : public Object
 {
     friend class Dataset;
     friend class Attributes;
@@ -332,10 +344,6 @@ class Dataspace : protected Object
     Dataspace(hid_t id, internal::Tag) : Object(id) {}
   
   public:
-    using Object::get_id;
-    using Object::get_name;
-    using Object::is_valid;
-
     static Dataspace create_nd(const hsize_t* dims, const hsize_t ndims)
     {
       hid_t id = H5Screate_simple(ndims, dims, NULL);
@@ -366,7 +374,7 @@ class Dataspace : protected Object
       return r;
     }
     
-    void get_dims(hsize_t *dims)
+    void get_dims(hsize_t *dims) const
     {
       int r = H5Sget_simple_extent_dims(this->id, dims, NULL);
       if (r < 0)
@@ -440,17 +448,12 @@ inline Dataspace create_dataspace(int dim0, int dim1 = 0, int dim2 = 0, int dim3
 
 
 
-
-class Attribute : protected Object
+class Attribute : public Object
 {
   friend class Attributes;
   friend class RWattribute;
     using Object::inc_ref;
-  private:
-    using Object::get_id;
-    using Object::is_valid;
-    using Object::get_file_name;
-        
+  private:       
     Attribute(hid_t id, internal::Tag) : Object(id) {}
       
     Attribute(hid_t loc_id, const std::string &name, hid_t type_id, hid_t space_id, hid_t acpl_id, hid_t aapl_id, internal::TagCreate)
@@ -493,13 +496,13 @@ class Attribute : protected Object
     void get_array(int buffer_size, T *values) const;
 
     template<class T>
-        void get(T &value) const
+    void get(T &value) const
     {
       get_array<T>(1, &value);
     }
 
     template<class T>
-        T get() const
+    T get() const
     {
       T r;
       get<T>(r);
@@ -551,8 +554,6 @@ class Attributes
     Attributes() : attributed_object() {}
     Attributes(const Object &o) : attributed_object(o) {}
 
-
-#if 1
     Attribute open(const std::string &name)
     {
       return Attribute(attributed_object.get_id(), name, H5P_DEFAULT, internal::TagOpen());
@@ -605,44 +606,12 @@ class Attributes
       return open(name).get<T>();
     }
     
+#ifdef HDF_WRAPPER_HAS_BOOST
     template<class T>
     boost::optional<T> try_get(const std::string &name)
     {
       if (exists(name)) return boost::optional<T>(get<T>(name));
       else return boost::optional<T>();
-    }
-
-#else
-    template<class T>
-    void set(const std::string &name, const T &value)
-    {
-      Datatype disktype = user::as_h5_datatype<T>::value(ON_DISK);
-      Dataspace diskspace = Dataspace::create_scalar();
-      Attribute a(attributed_object.get_id(),
-                  name,
-                  disktype.get_id(),
-                  diskspace.get_id(),
-                  H5P_DEFAULT, H5P_DEFAULT, 
-                  internal::TagCreate());
-      RWattribute rw(a.get_id());
-      user::as_h5_datatype<T>::write(rw, user::as_h5_datatype<T>::value(IN_MEM), value);
-    }
-    
-    template<class T>
-    T get(const std::string &name)
-    {
-      Attribute a(attributed_object.get_id(),
-                  name,
-                  H5P_DEFAULT,
-                  internal::TagOpen());
-      RWattribute rw(a.get_id());;
-      return user::as_h5_datatype<T>::read(rw, user::as_h5_datatype<T>::value(IN_MEM));
-    }
-
-    template<class T>
-        void get(const std::string &name, T &value)
-    {
-      value = get<T>(name);
     }
 #endif
 };
@@ -653,6 +622,7 @@ class Properties : protected Object
   public:
     using Object::get_id;
     using Object::is_valid;
+    using Object::is_same;
 
     Properties(hid_t cls_id) : Object()
     {
@@ -672,6 +642,7 @@ class Properties : protected Object
       H5Pset_chunk(this->id, rank, dims);
       return *this;
     }
+
     Properties& chunked_with_estimated_size(const Dataspace &sp)
     {
       std::vector<int> dims = sp.get_dims();
@@ -692,9 +663,9 @@ class Properties : protected Object
 };
 
 
+class iterator;
 
-
-class Group : protected Object
+class Group : public Object
 {
     friend class File;
 	private:
@@ -711,18 +682,9 @@ class Group : protected Object
 				throw Exception("unable to create group: "+std::string(name));
 		}
 	public:
-    using Object::get_id;
-    using Object::get_name;
-    using Object::is_valid;
-    using Object::get_file_name;
-    using Object::get_file;
     
     Group() : Object() {}
     explicit Group(hid_t id) : Object(id) { Object::inc_ref(); }
-//     ~Group() {
-//       H5Gclose(this->id);
-//       this->id = -1;
-//     }
 
     bool exists(const std::string &name) const
     {
@@ -731,7 +693,27 @@ class Group : protected Object
         throw Exception("cannot determine existence of link");
       return res > 0;
     }
+
+    // number of links in the group
+    int size() const
+    {
+      H5G_info_t info;
+      herr_t res = H5Gget_info(this->id, &info);
+      if (res < 0)
+        throw Exception("cannot get info of group");
+      return info.nlinks;
+    }
     
+    // used to iterate over links in the group, up to size()
+    std::string get_link_name(int idx) const
+    {
+      char buffer[4096];
+      ssize_t n = H5Lget_name_by_idx(this->id, ".", H5_INDEX_NAME, H5_ITER_NATIVE, (hsize_t)idx, buffer, 4096, H5P_DEFAULT);
+      if (n < 0)
+        throw Exception("cannot get name of link in group");
+      return std::string(buffer, n);
+    }
+
 		Group create_group(const std::string &name)
 		{
 			return Group(this->id, name.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT, internal::TagCreate());
@@ -763,21 +745,53 @@ class Group : protected Object
     
     Dataset open_dataset(const std::string &name);
 
+    iterator begin();
+    iterator end();
+
+#ifdef HDF_WRAPPER_HAS_BOOST
     boost::optional<Dataset> try_open_dataset(const std::string &name);
+#endif
 };
 
 
-class File : protected Object
+class iterator : public std::iterator<std::bidirectional_iterator_tag, std::string>
+{
+    int idx;
+    Group g;
+    friend class Group;
+    iterator(int idx_, Group g_) : idx(idx_), g(g_) {}
+  public:
+    iterator()  : idx(std::numeric_limits<int>::max()) {}
+    iterator& operator++() { ++idx; return *this; }
+    iterator& operator--() { --idx; return *this; }
+    iterator  operator++(int) { auto tmp = *this; ++idx; return tmp; }
+    iterator  operator--(int) { auto tmp = *this; --idx; return tmp; }
+    bool operator==(const iterator &other) const { return other.idx == idx; assert(other.g.is_same(g)); }
+    bool operator!=(const iterator &other) const { return !(*this == other); }
+    std::string dereference() const
+    {
+      return g.get_link_name(idx);
+    }
+    std::string operator*() const { return dereference(); }
+};
+
+
+iterator Group::begin()
+{
+  return iterator(0, *this);
+}
+
+iterator Group::end()
+{
+  return iterator(this->size(), *this);
+}
+
+
+class File : public Object
 {
     explicit File(hid_t id, internal::Tag) : Object(id) {}
-    friend class Object;
+    friend class Object; // allowed to create from new reference
   public:
-    using Object::get_id;
-    using Object::get_name;
-    using Object::is_valid;
-    using Object::get_file_name;
-    using Object::get_file;
-
     explicit File(hid_t id) : Object() { this->inc_ref(); } // a logical copy of the original given by id, we inc reference count so the source can release its handle
     
     /*
@@ -863,6 +877,7 @@ class File : protected Object
 inline File Object::get_file() const
 {
   hid_t fid = H5Iget_file_id(id); // it seems to increase the reference count by its own. (The returned id acts as copy of the file reference)
+  // https://www.hdfgroup.org/HDF5/doc/RM/RM_H5I.html#Identify-GetFileId
   if (fid < 0)
     throw Exception("cannot get file id from object");
   return File(fid, internal::Tag());
@@ -874,21 +889,22 @@ enum DsCreationFlags
   NONE = 0,
   COMPRESSED = 1,
   CHUNKED = 2,
-#ifdef H5_HAVE_FILTER_DEFLATE
-  MW_HDF5_DEFAULT_FILTER = COMPRESSED
+#ifndef HDF_WRAPPER_DS_CREATION_DEFAULT_FLAGS
+  #ifdef H5_HAVE_FILTER_DEFLATE
+    DEFAULT_FLAGS = COMPRESSED
+  #else
+    DEFAULT_FLAGS = NONE
+  #endif
 #else
-  MW_HDF5_DEFAULT_FILTER = NONE
+  DEFAULT_FLAGS = HDF_WRAPPER_DS_CREATION_DEFAULT_FLAGS
 #endif
 };
 
 
-//class DatasetSelection
-//{
-//  Dataspace space;
-//};
 
 
-class Dataset : protected Object
+
+class Dataset : public Object
 {
     friend class Group;
   private:
@@ -916,12 +932,6 @@ class Dataset : protected Object
     Dataset(hid_t id, internal::Tag) : Object(id) {} // we get an existing reference, no need to increase the ref count. it will only be lowered by one when the instance is destroyed.
     
   public:
-    using Object::get_id;
-    using Object::get_name;
-    using Object::is_valid;
-    using Object::get_file_name;
-    using Object::get_file;
-
     Dataset() : Object() {}
     explicit Dataset(hid_t id) : Object(id) { Object::inc_ref(); } // we manage the new reference
     
@@ -943,7 +953,7 @@ class Dataset : protected Object
     }
 
     template<class T>
-    static Dataset create_simple(Group group, const std::string &name, const Dataspace &sp, const T* data, DsCreationFlags flags = MW_HDF5_DEFAULT_FILTER, const Datatype &disktype = user::as_h5_datatype<T>::value(ON_DISK))
+    static Dataset create_simple(Group group, const std::string &name, const Dataspace &sp, const T* data, DsCreationFlags flags = DsCreationFlags::DEFAULT_FLAGS, const Datatype &disktype = user::as_h5_datatype<T>::value(ON_DISK))
     {
       Dataset ds = Dataset::create(group, name, disktype, sp, Dataset::create_creation_properties(sp, flags));
       if (data)
@@ -1013,7 +1023,7 @@ inline Dataset Group::open_dataset(const std::string &name)
   return Dataset(this->id, name, H5P_DEFAULT, internal::TagOpen()); 
 }
 
-
+#ifdef HDF_WRAPPER_HAS_BOOST
 inline boost::optional<Dataset> Group::try_open_dataset(const std::string &name)
 {
   hid_t id;
@@ -1024,14 +1034,14 @@ inline boost::optional<Dataset> Group::try_open_dataset(const std::string &name)
   }
   if (id < 0) 
   {
-    if (exists(name))
+    if (exists(name)) // well so the dataset exists but for some reason it cannot be opened -> error
       throw Exception("unable to open existing item as dataset: "+name);
     else
-      return boost::optional<Dataset>();
+      return boost::optional<Dataset>(); // no dataset under this name
   }
   else return boost::optional<Dataset>(Dataset(id, internal::Tag()));
 }
-
+#endif
 
 
 
@@ -1094,16 +1104,19 @@ namespace user
       }
       else
       {
+        // see https://www.hdfgroup.org/HDF5/doc1.6/UG/11_Datatypes.html
+        // variable data sets. string types (char*, char[n], std::string) are mapped by default to variable length data types
         Datatype dt = value(IN_MEM);
+        assert(H5Tis_variable_str(dt.get_id()));
         int n = space.get_count();
-        assert(n >= 1);
-        std::vector<char*> s(n);
-        rw.read(dt, &s[0]);
-        for (int i=0; i<n; ++i)
+        std::vector<char*> buffers(n);
+        rw.read(dt, &buffers[0]);
+        for (int i = 0; i < n; ++i)
         {
-          values[i].assign(s[i]);
-          free(s[i]);
+          values[i].assign(buffers[i]);
         }
+        // release the stuff that hdf5 allocated
+        H5Dvlen_reclaim(dt.get_id(), space.get_id(), H5P_DEFAULT, &buffers[0]);
       }
     }
   };
@@ -1123,6 +1136,15 @@ namespace user
       for (int i=0; i<s.size(); ++i) s[i] = values[i];
       as_h5_datatype<const char*>::write(rw, dt, space, &s[0]);
     }
+  };
+
+  // const char[n] added for visual c++2013
+  template<size_t n>
+  struct as_h5_datatype<const char [n]>
+  {
+    typedef const char const CharArray[n];
+    static inline Datatype value(DatatypeSelect sel) { return as_h5_datatype<char[n]>::value(sel); }
+    static inline void write(RW &rw, const Datatype &dt, const Dataspace &space, const CharArray *values)  { return as_h5_datatype<char[n]>::write(rw, dt, space, values); }
   };
 
 #else

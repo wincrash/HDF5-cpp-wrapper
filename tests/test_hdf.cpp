@@ -6,10 +6,9 @@
 #include <iostream>
 #include <vector>
 
-#include "mwlib/field.h"
-#include "mwlib/lattice-data.h"
-#include "mwlib/hdf_wrapper.h"
-#include "mwlib/hdf_wrapper_array3d.h"
+#include "hdf_wrapper.h"
+#include "hdf_wrapper_stl.h"
+
 
 using boost::str;
 using boost::format;
@@ -70,6 +69,7 @@ void WriteFile()
   }
   h5::Group g2 = root.open_group("g1").create_group("g2");
 
+#if 0
   { // scalar field test
     Array3d<float> f;
     BBox3 bb(Int3(0), Int3(1,2,3)); 
@@ -104,6 +104,7 @@ void WriteFile()
     sp.select_hyperslab(offset, stride, count, block);
     ds.write(sp, memsp, &memdata[0]);
   }
+#endif
 }
 
 void ReadFile()
@@ -150,6 +151,22 @@ void ReadFile()
     cout << " " << string_vec[i];
   cout << endl;
 
+  assert(root.is_valid());
+  cout << root.get_name() << " has " << root.size() << " children." << endl;
+  cout << "children of " << root.get_name() << endl;
+  for (int i = 0; i < root.size(); ++i)
+  {
+    cout << "\t" << root.get_link_name(i) << endl;
+  }
+  cout << "and again ..." << endl;
+
+  const auto end = root.end(); // takes a little bit of time
+  for (auto it = root.begin(); it != end; ++it)
+  {
+    cout << "\t" << *it << endl;
+  }
+
+#if 0
   {
     cout << "reading testfield" << endl;
     Array3d<float> arr;
@@ -158,6 +175,7 @@ void ReadFile()
     ReadArray3D<float>(root.open_dataset("test_field"), arr);
     PrintArray<>(arr);
   }
+#endif
 }
 
 
@@ -165,11 +183,6 @@ int main(int argc, char **argv)
 {
   WriteFile();
   ReadFile();
-//   std::istringstream ss("hallo \"turbo spasti\"!");
-//   std::string s[4];
-//   ss >> s[0];
-//   ss >> s[1];
-//   cout << s[0] << endl;
-//  cout << s[1] << endl;
+  cin.get();
   return 0;
 }

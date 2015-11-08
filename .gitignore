@@ -6,6 +6,9 @@
 .spyderproject
 *.kate-swp
 
+# because i put build products there
+tests/build
+
 #CMake stuff
 CMakeCache.txt
 CMakeFiles
