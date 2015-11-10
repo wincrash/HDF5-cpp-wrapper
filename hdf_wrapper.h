@@ -843,6 +843,11 @@ class Group : public Object
 };
 
 
+/*
+  TODO: i probably want an iterator that returns Object references. Objects because 
+  items in groups can be datasets or other groups. For this to be usefull,
+  i need a mechanism to cast Object to derived classes.
+*/
 class iterator : public std::iterator<std::bidirectional_iterator_tag, std::string>
 {
     int idx;
@@ -878,8 +883,8 @@ inline iterator Group::end()
 
 class File : public Object
 {
-    explicit File(hid_t id, internal::Tag) : Object(id) {}
-    friend class Object; // allowed to create from new reference
+    File(hid_t id, internal::Tag) : Object(id) {} // takes a file handle that needs to be closed.
+    friend class Object; // because Object need to construct File using the above constructor.
   public:
     explicit File(hid_t id) : Object() { this->inc_ref(); } // a logical copy of the original given by id, we inc reference count so the source can release its handle
     
