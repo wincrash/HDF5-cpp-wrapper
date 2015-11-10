@@ -26,18 +26,33 @@ struct Failtype
 
 void WriteFile()
 {
+  h5::disableAutoErrorReporting();
+
   h5::File file("test.h5", "w");
   h5::Group root = file.root();
   h5::Group g = root.create_group("testing_the_group");
-  g.attrs().set<double>("a1", 5.);
-  g.attrs().set<int>("second_attribute", 1);
+  g.attrs().create<double>("a1", 5.);
+  g.attrs().create<int>("second_attribute", 1);
       
   h5::Attributes a = root.attrs();
-  a.set<char>("achar",'q');
-  a.set<float>("afloat",9000.0);
-  a.set<string>("astring_attr","teststring");
-  a.set("c_str_attr","it's a c string");
-  
+  a.create<char>("a_char",'q');
+  a.create<float>("to_be_deleted", 9000.0);
+  a.set("attrib_overwrite_test", 1);
+  a.set("over_nine_thousand", 9001.0);
+  a.create<string>("a_string_attr","teststring");
+  a.create("c_str_attr", "it's a c string");
+  try
+  {
+      a.create<float>("to_be_deleted", 9002.0); 
+  }
+  catch (my::h5::Exception &e)
+  {
+    cout << "Attempt to create two attributes under the same name correctly failed with error message:" << endl;
+    cout << e.what() << endl;
+  }
+  a.remove("to_be_deleted");
+  a.set("attrib_overwrite_test", "erased and recreated!");
+
   //a = g.attrs();
   //a.set<Failtype>("failtest", Failtype());
   
@@ -49,23 +64,23 @@ void WriteFile()
   h5::Dataset ds = h5::Dataset::create_simple(g, "testds", h5::create_dataspace_from_range(sizes), &data[0]);
 
   int static_ints[6] = { 1, 2, 3, 4, 5, 6 };
-  ds.attrs().set_array("ints", h5::create_dataspace(2,3), static_ints);
+  ds.attrs().create("ints", h5::create_dataspace(2,3), static_ints);
 
   vector<string> ss;
   ss.push_back("test");
   ss.push_back("string");
   ss.push_back("array attrib");
-  ds.attrs().set_array("strings", h5::create_dataspace(ss.size()), &ss[0]);
+  ds.attrs().create("strings", h5::create_dataspace(ss.size()), &ss[0]);
 
   const char* morestrings[] = {
     "string1",
     "string2",
     "string3"
   };
-  ds.attrs().set_array("more_strings", h5::create_dataspace(3), morestrings);
+  ds.attrs().create("more_strings", h5::create_dataspace(3), morestrings);
 
   {
-  h5::Group g1 = root.create_group("g1");
+    h5::Group g1 = root.create_group("g1");
   }
   h5::Group g2 = root.open_group("g1").create_group("g2");
 
@@ -134,19 +149,19 @@ void ReadFile()
   
   h5::Attributes a = ds.attrs();
   int static_ints[6];
-  a["ints"].get_array(6, static_ints);
+  a.get("ints", my::h5::create_dataspace(6), static_ints);
   cout << "static ints";
   for (int i=0; i<6; ++i)
     cout << " " << static_ints[i];
   cout << endl;
   
   vector<string> string_vec;
-  h5::Attribute at = a["strings"];
+  h5::Attribute at = a.open("strings");
   int size = at.get_dataspace().get_count();
   cout << "string_vec (" << size << ") ";
   cout.flush();
   string_vec.resize(size);
-  at.get_array(string_vec.size(), &string_vec[0]);
+  at.read(my::h5::create_dataspace(string_vec.size()), &string_vec[0]);
   for (int i=0; i<string_vec.size(); ++i)
     cout << " " << string_vec[i];
   cout << endl;

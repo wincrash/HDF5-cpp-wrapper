@@ -5,6 +5,7 @@
 #include <iostream> // for dealing with strings in exceptions, mostly
 #include <string>// for dealing with strings in exceptions, mostly
 #include <sstream>// for dealing with strings in exceptions, mostly
+#include <type_traits> // for removal of const qualifiers
 
 #include <assert.h>
 #include <vector>
@@ -13,9 +14,8 @@
 #if (defined __APPLE__)
       // implement nice exception messages that need string manipulation
 #elif (defined _MSC_VER)
-      // here, too
+  #include <stdio.h> // for FILE stream manipulation
 #elif (defined __GNUG__)
-  #include <malloc.h>
   #include <stdio.h>
 #endif
 
@@ -37,6 +37,7 @@ class Object;
 class Dataspace;
 class Dataset;
 class Attributes;
+class Attribute;
 class File;
 class Group;
 
@@ -75,6 +76,44 @@ public:
 };
 
 
+
+/*
+  hack around a strange issue: err_desc is partially filled with garbage (func_name, file_name, desc). Therefore,
+  this custom error printer is used.
+*/
+static herr_t custom_print_cb(unsigned n, const H5E_error2_t *err_desc, void* client_data)
+{
+  const int MSG_SIZE = 256;
+  auto *out = static_cast<std::string*>(client_data);
+  char                maj[MSG_SIZE];
+  char                min[MSG_SIZE];
+  char                cls[MSG_SIZE];
+  char             buffer[MSG_SIZE];
+
+  /* Get descriptions for the major and minor error numbers */
+  if (H5Eget_class_name(err_desc->cls_id, cls, MSG_SIZE) < 0)
+    return -1;
+
+  if (H5Eget_msg(err_desc->maj_num, NULL, maj, MSG_SIZE)<0)
+    return -1;
+
+  if (H5Eget_msg(err_desc->min_num, NULL, min, MSG_SIZE)<0)
+    return -1;
+
+  sprintf_s(buffer, MSG_SIZE, "  () Class: %s, Major: %s, Minor: %s", cls, maj, min);
+  buffer[MSG_SIZE - 1] = 0; // its the only way to be sure ...
+  try
+  {
+    out->append(buffer);
+  }
+  catch (...)
+  {
+    // suppress all exceptions since thsi function is called from a c library.
+  }
+  return 0;
+}
+
+
 class Exception : public std::exception
 {
     std::string msg;
@@ -83,20 +122,12 @@ class Exception : public std::exception
     {
 #if (defined __APPLE__)
       // implement nice exception messages that need string manipulation
-#elif (defined _MSC_VER)
-      // here, too
-#elif (defined __GNUG__)
-      char *mem;
-      size_t size;
-      FILE* stream = open_memstream(&mem, &size);
-      H5Eprint2(H5E_DEFAULT, stream);
-      fclose(stream);
-      msg += "\n";
-      msg += std::string(mem);
-      free(mem);
+#elif (defined _MSC_VER) || (defined __GNUG__)
+      msg.append(". Error Stack:");
+      H5Ewalk2(H5E_DEFAULT, H5E_WALK_DOWNWARD, &custom_print_cb, &msg);
 #endif
     }
-    Exception() : msg("unspecified error") { assert(false); }
+    Exception() : msg("Unspecified error") { assert(false); }
     ~Exception() throw() {}
     const char* what() const throw() { return msg.c_str(); }
 };
@@ -104,7 +135,7 @@ class Exception : public std::exception
 class NameLookupError : public Exception
 {
   public:
-    NameLookupError(const std::string &name) : Exception("cannot find '"+name+"'") {}
+    NameLookupError(const std::string &name) : Exception("Cannot find '"+name+"'") {}
 };
 
 
@@ -116,7 +147,7 @@ class Object
       inc_ref();
     }
 
-    ~Object() 
+    virtual ~Object() 
     {
       dec_ref();
     }
@@ -323,15 +354,9 @@ class RW
 
 
 
-namespace user
-{
 
 template<class T>
-struct as_h5_datatype;
-
-}
-
-
+struct h5traits_of;
 
 
 
@@ -476,6 +501,8 @@ class Attribute : public Object
     }
         
   public:
+    Attribute() {}
+
     Dataspace get_dataspace() const
     {
       hid_t id = H5Aget_space(this->id);
@@ -492,22 +519,13 @@ class Attribute : public Object
       return Datatype(type_id);
     }
 
+    /* assuming that the memory dataspace equals disk dataspace */
     template<class T>
-    void get_array(int buffer_size, T *values) const;
+    void read(Dataspace mem_space, T *values) const;
 
+    /* assuming that the memory dataspace equals disk dataspace */
     template<class T>
-    void get(T &value) const
-    {
-      get_array<T>(1, &value);
-    }
-
-    template<class T>
-    T get() const
-    {
-      T r;
-      get<T>(r);
-      return r;
-    }
+    void write(Dataspace mem_space, T* values);
 };
 
 
@@ -535,14 +553,19 @@ public:
 
 
 template<class T>
-inline void Attribute::get_array(int buffer_size, T *values) const
+inline void Attribute::read(Dataspace mem_space, T *values) const
 {
-  Dataspace ds = get_dataspace();
-  if (ds.get_count() != buffer_size)
-    throw Exception("buffer_size argument does not match dataspace size");
-  RWattribute rw(get_id());
-  user::as_h5_datatype<T>::read(rw, get_dataspace(), values);
+  RWattribute rw(this->get_id());
+  h5traits_of<T>::type::read(rw, mem_space, values);
 }
+
+template<class T>
+inline void Attribute::write(Dataspace mem_space, T *values)
+{
+  RWattribute rw(this->get_id());
+  h5traits_of<T>::type::write(rw, mem_space, values);
+}
+
 
 
 class Attributes
@@ -559,9 +582,64 @@ class Attributes
       return Attribute(attributed_object.get_id(), name, H5P_DEFAULT, internal::TagOpen());
     }
 
-    Attribute operator[](const std::string &name)
+    template<class T>
+    Attribute create(const std::string &name, const Dataspace &space)
     {
-      return open(name);
+      Datatype disktype = get_disktype<T>();
+      Attribute a(attributed_object.get_id(),
+                  name,
+                  disktype.get_id(),
+                  space.get_id(),
+                  H5P_DEFAULT, H5P_DEFAULT,
+                  internal::TagCreate());
+      return a;
+    }
+
+    template<class T>
+    void create(const std::string &name, const T &value)
+    {
+      auto sp = Dataspace::create_scalar();
+      create<T>(name, sp).write(sp, &value);
+    }
+
+    template<class T>
+    void create(const std::string &name, Dataspace space, const T *values)
+    {
+      create<T>(name, space).write(space, values);
+    }
+
+    /*
+      If the attribute already exists, this function will first try
+      to write the data using the given Dataspace, and then return. If this fails, the
+      attribute is deleted and a new attribute is created using the provided dataspace.
+    */
+    template<class T>
+    void set(const std::string &name, Dataspace space, const T* values)
+    {
+      Attribute a;
+      if (exists(name))
+      {
+        AutoErrorReportingGuard disableErrorOutput;
+        try
+        {
+          a = open(name);
+          a.write(space, values);
+          return;
+        }
+        catch (const Exception &)
+        {
+          remove(name);
+        }
+      }
+      a = create<T>(name, space);
+      a.write(space, values);
+      return;
+    }
+
+    template<class T>
+    void set(const std::string &name, const T &value)
+    {
+      set(name, Dataspace::create_scalar(), &value);
     }
     
     bool exists(const std::string &name) const
@@ -571,39 +649,36 @@ class Attributes
       else if (res==0) return false;
       else throw Exception("error looking for attribute by name");
     }
-    
-    // setters
-    template<class T>
-    void set_array(const std::string &name, const Dataspace &space, const T* values)
+
+    int size() const
     {
-      Datatype disktype = user::as_h5_datatype<T>::value(ON_DISK);
-      Attribute a(attributed_object.get_id(),
-                  name,
-                  disktype.get_id(),
-                  space.get_id(),
-                  H5P_DEFAULT, H5P_DEFAULT,
-                  internal::TagCreate());
-      RWattribute rw(a.get_id());
-      user::as_h5_datatype<T>::write(rw, user::as_h5_datatype<T>::value(IN_MEM), space, values);
+      hid_t objid = attributed_object.get_id();
+      H5O_info_t info;
+      herr_t err = H5Oget_info(objid, &info);
+      if (err < 0)
+        throw Exception("error getting the number of attributes on an object");
+      return info.num_attrs;
     }
 
-    template<class T>
-    void set(const std::string &name, const T &value)
-    {
-      set_array(name, Dataspace::create_scalar(), &value);
-    }
-
-    // getters
     template<class T>
     void get(const std::string &name, T &value)
     {
-      open(name).get(value);
+      Dataspace ds = Dataspace::create_scalar();
+      open(name).read(ds, &value);
     }
 
     template<class T>
     T get(const std::string &name)
     {
-      return open(name).get<T>();
+      T ret;
+      get(name, ret);
+      return ret;
+    }
+
+    template<class T>
+    void get(const std::string &name, Dataspace space, T* values)
+    {
+      open(name).read(space, values);
     }
     
 #ifdef HDF_WRAPPER_HAS_BOOST
@@ -614,6 +689,13 @@ class Attributes
       else return boost::optional<T>();
     }
 #endif
+
+    void remove(const std::string &name)
+    {
+      herr_t err = H5Adelete(attributed_object.get_id(), name.c_str());
+      if (err < 0)
+        throw Exception("error deleting attribute");
+    }
 };
 
 
@@ -745,12 +827,19 @@ class Group : public Object
     
     Dataset open_dataset(const std::string &name);
 
-    iterator begin();
-    iterator end();
-
 #ifdef HDF_WRAPPER_HAS_BOOST
     boost::optional<Dataset> try_open_dataset(const std::string &name);
 #endif
+
+    void remove(const std::string &name)
+    {
+      herr_t err = H5Ldelete(get_id(), name.c_str(), H5P_DEFAULT);
+      if (err < 0)
+        throw Exception("cannot remove link from group");
+    }
+
+    iterator begin();
+    iterator end();
 };
 
 
@@ -918,7 +1007,7 @@ class Dataset : public Object
     template<class T>
     void write(hid_t disk_space_id, hid_t mem_space_id, const T* data)
     {
-      Datatype dt = user::as_h5_datatype<T>::value(IN_MEM);
+      Datatype dt = get_memtype<T>();
       if (dt.get_size() == H5T_VARIABLE)
         throw Exception("not implemented");
       herr_t res = H5Dwrite(id, dt.get_id(),
@@ -949,11 +1038,10 @@ class Dataset : public Object
     void write(const T* data)
     {
       write(H5S_ALL, H5S_ALL, data);
-      
     }
 
     template<class T>
-    static Dataset create_simple(Group group, const std::string &name, const Dataspace &sp, const T* data, DsCreationFlags flags = DEFAULT_FLAGS, const Datatype &disktype = user::as_h5_datatype<T>::value(ON_DISK))
+    static Dataset create_simple(Group group, const std::string &name, const Dataspace &sp, const T* data, DsCreationFlags flags = DEFAULT_FLAGS, const Datatype &disktype = get_disktype<T>())
     {
       Dataset ds = Dataset::create(group, name, disktype, sp, Dataset::create_creation_properties(sp, flags));
       if (data)
@@ -962,7 +1050,7 @@ class Dataset : public Object
     }
 
     template<class T>
-    static Dataset create_scalar(Group group, const std::string &name, const T& data, const Datatype &disktype = user::as_h5_datatype<T>::value(ON_DISK))
+    static Dataset create_scalar(Group group, const std::string &name, const T& data, const Datatype &disktype = get_disktype<T>())
     {
       Dataspace sp = Dataspace::create_scalar();
       Dataset ds = Dataset::create(group, name, disktype, sp, Dataset::create_creation_properties(sp, NONE));
@@ -1002,7 +1090,7 @@ class Dataset : public Object
     template<class T>
     void read_simple(T *data) const
     {
-      Datatype dt = user::as_h5_datatype<T>::value(IN_MEM);
+      Datatype dt = get_memtype<T>();
       if (dt.get_size() == H5T_VARIABLE)
         throw Exception("not implemented");
       herr_t res = H5Dread(this->id, dt.get_id(),
@@ -1045,173 +1133,123 @@ inline boost::optional<Dataset> Group::try_open_dataset(const std::string &name)
 
 
 
-namespace user
-{
-#if 1
-  template<class T>
-  struct as_h5_datatype
-  {
-    static inline Datatype value(DatatypeSelect sel)
-    {
-      return Datatype::createPod<T>(sel);
-    }
-  
-    static inline void write(RW &rw, const Datatype &dt, const Dataspace &space, const T *values)
-    {
-      rw.write(dt, values);
-    }
-  
-    static inline void read(RW &rw, const Dataspace &space, T *values)
-    {
-      rw.read(value(IN_MEM), values);
-    }
-  };
-
-  template<>
-  struct as_h5_datatype<std::string>
-  {
-    static inline Datatype value(DatatypeSelect sel)
-    {
-      return Datatype::createPod<const char*>(sel);
-    }
-
-    static inline void write(RW &rw, const Datatype &dt, const Dataspace &space, const std::string *values)
-    {
-      int n = space.get_count();
-      assert(n >= 1);
-      std::vector<const char*> s(n);
-      for (int i=0; i<n; ++i) s[i] = values[i].c_str();
-      rw.write(dt, &s[0]);
-    }
-
-    static inline void read(RW &rw, const Dataspace &space, std::string *values)
-    {
-      int n = space.get_count();
-      assert(n >= 1);
-      Datatype disc_dt = rw.get_datatype();
-      if (H5Tis_variable_str(disc_dt.get_id())==0)
-      {
-        Datatype dt = Datatype::createFixedLenString(IN_MEM);
-        std::size_t len = disc_dt.get_size();
-        len += 1; // for null termi
-        dt.set_size(len);
-        std::vector<char> s(n*len);
-        rw.read(dt, &s[0]);
-        for (std::size_t i=0; i<n; ++i)
-        {
-          values[i].assign(&s[i*len]);
-        }
-      }
-      else
-      {
-        // see https://www.hdfgroup.org/HDF5/doc1.6/UG/11_Datatypes.html
-        // variable data sets. string types (char*, char[n], std::string) are mapped by default to variable length data types
-        Datatype dt = value(IN_MEM);
-        assert(H5Tis_variable_str(dt.get_id()));
-        int n = space.get_count();
-        std::vector<char*> buffers(n);
-        rw.read(dt, &buffers[0]);
-        for (int i = 0; i < n; ++i)
-        {
-          values[i].assign(buffers[i]);
-        }
-        // release the stuff that hdf5 allocated
-        H5Dvlen_reclaim(dt.get_id(), space.get_id(), H5P_DEFAULT, &buffers[0]);
-      }
-    }
-  };
-
-  template<size_t n>
-  struct as_h5_datatype<char[n]>
-  {
-    typedef char CharArray[n];
-    static inline Datatype value(DatatypeSelect sel)
-    {
-      return Datatype::createPod<const char*>(sel);
-    }
-
-    static inline void write(RW &rw, const Datatype &dt, const Dataspace &space, const CharArray *values)
-    {
-      std::vector<const char*> s(space.get_count());
-      for (int i=0; i<s.size(); ++i) s[i] = values[i];
-      as_h5_datatype<const char*>::write(rw, dt, space, &s[0]);
-    }
-  };
-
-  // const char[n] added for visual c++2013
-  template<size_t n>
-  struct as_h5_datatype<const char [n]>
-  {
-    typedef char CharArray[n];
-    static inline Datatype value(DatatypeSelect sel) { return as_h5_datatype<char[n]>::value(sel); }
-    static inline void write(RW &rw, const Datatype &dt, const Dataspace &space, const CharArray *values)  { return as_h5_datatype<char[n]>::write(rw, dt, space, values); }
-  };
-
-#else
 template<class T>
-struct as_h5_datatype
+struct h5traits
 {
   static inline Datatype value(DatatypeSelect sel)
   {
-    return Datatype::as_h5<T>(sel);
+    return Datatype::createPod<T>(sel);
   }
   
-  static inline void write(RW &rw, const Datatype &dt, const T &value)
+  static inline void write(RW &rw, const Dataspace &space, const T *values)
   {
-    rw.write(dt, &value);
+    rw.write(value(IN_MEM), values);
   }
   
-  static inline T read(RW &rw, const Datatype &dt)
+  static inline void read(RW &rw, const Dataspace &space, T *values)
   {
-    T t;
-    rw.read(dt, &t);
-    return t;
+    rw.read(value(IN_MEM), values);
   }
 };
-
 
 template<>
-struct as_h5_datatype<std::string>
+struct h5traits<std::string>
 {
   static inline Datatype value(DatatypeSelect sel)
   {
-    return Datatype::as_h5<const char*>(sel);
+    return Datatype::createPod<const char*>(sel);
   }
 
-  static inline void write(RW &rw,  const Datatype &dt, const std::string &value)
+  static inline void write(RW &rw, const Dataspace &space, const std::string *values)
   {
-    const char* s = value.c_str();
-    rw.write(dt, &s);
+    int n = space.get_count();
+    assert(n >= 1);
+    std::vector<const char*> s(n);
+    for (int i=0; i<n; ++i) s[i] = values[i].c_str();
+    rw.write(value(IN_MEM), &s[0]);
   }
 
-  static inline std::string read(RW &rw, const Datatype &dt)
+  static inline void read(RW &rw, const Dataspace &space, std::string *values)
   {
-    char* s = NULL;
-    rw.read(dt, &s);
-    std::string t(s);
-    free(s);
-    return t;
+    int n = space.get_count();
+    assert(n >= 1);
+    Datatype disc_dt = rw.get_datatype();
+    if (H5Tis_variable_str(disc_dt.get_id())==0)
+    {
+      Datatype dt = Datatype::createFixedLenString(IN_MEM);
+      std::size_t len = disc_dt.get_size();
+      len += 1; // for null termi
+      dt.set_size(len);
+      std::vector<char> s(n*len);
+      rw.read(dt, &s[0]);
+      for (std::size_t i=0; i<n; ++i)
+      {
+        values[i].assign(&s[i*len]);
+      }
+    }
+    else
+    {
+      // see https://www.hdfgroup.org/HDF5/doc1.6/UG/11_Datatypes.html
+      // variable data sets. string types (char*, char[n], std::string) are mapped by default to variable length data types
+      Datatype dt = value(IN_MEM);
+      assert(H5Tis_variable_str(dt.get_id()));
+      int n = space.get_count();
+      std::vector<char*> buffers(n);
+      rw.read(dt, &buffers[0]);
+      for (int i = 0; i < n; ++i)
+      {
+        values[i].assign(buffers[i]);
+      }
+      // release the stuff that hdf5 allocated
+      H5Dvlen_reclaim(dt.get_id(), space.get_id(), H5P_DEFAULT, &buffers[0]);
+    }
   }
 };
-
-
 
 template<size_t n>
-struct as_h5_datatype<char[n]>
+struct h5traits<char[n]>
 {
+  typedef char CharArray[n];
   static inline Datatype value(DatatypeSelect sel)
   {
-    return Datatype::as_h5<const char*>(sel);
+    return Datatype::createPod<const char*>(sel);
   }
-  
-  static inline void write(RW &rw, const Datatype &dt, const char (&value) [n])
+
+  static inline void write(RW &rw, const Dataspace &space, const CharArray *values)
   {
-    as_h5_datatype<const char*>::write(rw, dt, value);
+    std::vector<const char*> s(space.get_count());
+    for (int i=0; i<s.size(); ++i) s[i] = values[i];
+    h5traits<const char*>::write(rw, space, &s[0]);
   }
 };
 
-#endif
-} // namespace user
+//// const char[n] added for visual c++2013
+//template<size_t n>
+//struct as_h5_datatype<const char [n]>
+//{
+//  typedef char CharArray[n];
+//  static inline Datatype value(DatatypeSelect sel) { return as_h5_datatype<char[n]>::value(sel); }
+//  static inline void write(RW &rw, const Dataspace &space, const CharArray *values)  { return as_h5_datatype<char[n]>::write(rw, space, values); }
+//};
+
+template<class T>
+struct h5traits_of
+{
+  typedef typename std::remove_cv<T>::type stripped_type;
+  typedef h5traits<stripped_type> type;
+};
+
+template<class T>
+Datatype get_disktype()
+{
+  return h5traits_of<T>::type::value(ON_DISK);
+}
+
+template<class T>
+Datatype get_memtype()
+{
+  return h5traits_of<T>::type::value(IN_MEM);
+}
 
 } // namespace h5
 
