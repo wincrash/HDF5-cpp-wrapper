@@ -101,7 +101,7 @@ inline void set_array_attribute_stl(Attributes attrs, const std::string &name, c
   typedef typename std::iterator_traits<const_iterator>::value_type value_type;
   if (contiguous_mem_)
   {
-    attrs.set_array<>(name, create_dataspace(std::distance(begin, end)), &(*begin));
+    attrs.set(name, create_dataspace(std::distance(begin, end)), &(*begin));
   }
   else
   {

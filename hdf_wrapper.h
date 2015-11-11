@@ -36,6 +36,7 @@ namespace h5
 class Object;
 class Dataspace;
 class Dataset;
+class Datatype;
 class Attributes;
 class Attribute;
 class File;
@@ -76,7 +77,6 @@ public:
 };
 
 
-
 /*
   hack around a strange issue: err_desc is partially filled with garbage (func_name, file_name, desc). Therefore,
   this custom error printer is used.
@@ -100,7 +100,13 @@ static herr_t custom_print_cb(unsigned n, const H5E_error2_t *err_desc, void* cl
   if (H5Eget_msg(err_desc->min_num, NULL, min, MSG_SIZE)<0)
     return -1;
 
+#if (defined __APPLE__) // not even tested to compile this
+  snprintf(buffer, MSG_SIZE, "  () Class: %s, Major: %s, Minor: %s", cls, maj, min);    
+#elif (defined _MSC_VER)
   sprintf_s(buffer, MSG_SIZE, "  () Class: %s, Major: %s, Minor: %s", cls, maj, min);
+#elif (defined __GNUG__)
+  snprintf(buffer, MSG_SIZE, "  () Class: %s, Major: %s, Minor: %s", cls, maj, min);
+#endif
   buffer[MSG_SIZE - 1] = 0; // its the only way to be sure ...
   try
   {
@@ -137,6 +143,15 @@ class NameLookupError : public Exception
   public:
     NameLookupError(const std::string &name) : Exception("Cannot find '"+name+"'") {}
 };
+
+
+
+// definitions are at the end of the file
+template<class T>
+inline Datatype get_disktype();
+
+template<class T>
+inline Datatype get_memtype();
 
 
 class Object
@@ -585,7 +600,7 @@ class Attributes
     template<class T>
     Attribute create(const std::string &name, const Dataspace &space)
     {
-      Datatype disktype = get_disktype<T>();
+      Datatype disktype = my::h5::get_disktype<T>();
       Attribute a(attributed_object.get_id(),
                   name,
                   disktype.get_id(),
@@ -1245,13 +1260,13 @@ struct h5traits_of
 };
 
 template<class T>
-Datatype get_disktype()
+inline Datatype get_disktype()
 {
   return h5traits_of<T>::type::value(ON_DISK);
 }
 
 template<class T>
-Datatype get_memtype()
+inline Datatype get_memtype()
 {
   return h5traits_of<T>::type::value(IN_MEM);
 }
