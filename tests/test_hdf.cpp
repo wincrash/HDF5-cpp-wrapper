@@ -138,7 +138,7 @@ void ReadFile()
   cout << endl;
   
   vector<float> data(sp.get_count());
-  ds.read_simple<float>(&data[0]);
+  ds.read<float>(&data[0]);
   cout << "dataset = ";
   BOOST_FOREACH(float q, data)
     cout << q << " ";
@@ -149,7 +149,7 @@ void ReadFile()
   
   h5::Attributes a = ds.attrs();
   int static_ints[6];
-  a.get("ints", my::h5::create_dataspace(6), static_ints);
+  a.get("ints", static_ints);
   cout << "static ints";
   for (int i=0; i<6; ++i)
     cout << " " << static_ints[i];
@@ -161,7 +161,7 @@ void ReadFile()
   cout << "string_vec (" << size << ") ";
   cout.flush();
   string_vec.resize(size);
-  at.read(my::h5::create_dataspace(string_vec.size()), &string_vec[0]);
+  at.read(&string_vec[0]);
   for (int i=0; i<string_vec.size(); ++i)
     cout << " " << string_vec[i];
   cout << endl;

@@ -49,7 +49,7 @@ namespace internal
 struct Tag {};
 struct TagOpen {};
 struct TagCreate {};
-
+struct IncRef {};
 }
 
 static void disableAutoErrorReporting()
@@ -156,6 +156,13 @@ inline Datatype get_memtype();
 
 class Object
 {
+    void check_valid_throw()
+    {
+      htri_t ok = H5Iis_valid(id);
+      if (!ok)
+        throw Exception("initialization of Object with invalid handle");
+    }
+
   public:
     Object(const Object &o) : id(o.id) 
     {
@@ -183,12 +190,16 @@ class Object
 
     Object() : id(-1) {}
 
-    // normally we get a new handle. Its cout needs only decreasing.
+    // normally we get a new handle. Its count needs only decreasing.
     Object(hid_t id) : id(id)
     {
-      htri_t ok = H5Iis_valid(id);
-      if (!ok)
-        throw Exception("initialization of Object with invalid handle");
+      check_valid_throw();
+    }
+
+    Object(hid_t id, internal::IncRef) : id(id)
+    {
+      check_valid_throw();
+      inc_ref();
     }
     
     std::string get_name() const
@@ -261,6 +272,7 @@ class Datatype : public Object
 {
   private:
     friend class Attribute;
+    friend class Dataset;
     struct ConsFromPreset {};
     Datatype(hid_t id, ConsFromPreset) : Object() 
     {  
@@ -361,13 +373,50 @@ the same way, afik, except for function names, e.g. H5Awrite vs H5Dwrite.
 class RW
 {
   public:
-    virtual void write(const Datatype &dt, const void* buf) = 0;
-    virtual void read(const Datatype &dt, void* buf) = 0;
-    virtual Datatype get_datatype() const = 0;
+    virtual void write(const void* buf) = 0;
+    virtual void read(void *buf) = 0;
     virtual ~RW() {}
 };
 
+class RWdataset : public RW
+{
+  hid_t ds_id, mem_type_id, mem_space_id, file_space_id;
+public:
+  RWdataset(hid_t ds_id_, hid_t mem_type_id_, hid_t mem_space_id_, hid_t file_space_id_) : ds_id(ds_id_), mem_type_id(mem_type_id_), mem_space_id(mem_space_id_), file_space_id(file_space_id_) {}
+  void write(const void* buf)
+  {
+    herr_t err = H5Dwrite(ds_id, mem_type_id, mem_space_id, file_space_id, H5P_DEFAULT, buf);
+    if (err < 0)
+      throw Exception("error writing to dataset");
+  }
+  void read(void *buf)
+  {
+    herr_t err = H5Dread(ds_id, mem_type_id, mem_space_id, file_space_id, H5P_DEFAULT, buf);
+    if (err < 0)
+      throw Exception("error reading from dataset");
+  }
+};
 
+
+class RWattribute : public RW
+{
+  hid_t attr_id, mem_type_id;
+public:
+  RWattribute(hid_t attr_id_, hid_t mem_type_id_) : attr_id(attr_id_), mem_type_id(mem_type_id_) {}
+
+  void write(const void* buf)
+  {
+    herr_t err = H5Awrite(attr_id, mem_type_id, buf);
+    if (err < 0)
+      throw Exception("error writing to attribute");
+  }
+  void read(void *buf)
+  {
+    herr_t err = H5Aread(attr_id, mem_type_id, buf);
+    if (err < 0)
+      throw Exception("error reading from attribute");
+  }
+};
 
 
 template<class T>
@@ -382,7 +431,7 @@ class Dataspace : public Object
     friend class Attribute;
   private:
     Dataspace(hid_t id, internal::Tag) : Object(id) {}
-  
+    Dataspace(hid_t id, internal::IncRef) : Object(id, internal::IncRef()) {}
   public:
     static Dataspace create_nd(const hsize_t* dims, const hsize_t ndims)
     {
@@ -402,8 +451,27 @@ class Dataspace : public Object
     {
       hid_t id = H5Screate(H5S_SCALAR);
       if (id < 0)
-        throw Exception("unable to create scalar dataspace");
+        throw Exception("error creating scalar dataspace");
       return Dataspace(id, internal::Tag());
+    }
+
+    static Dataspace create_all()
+    {
+      hid_t id = H5Screate(H5S_SIMPLE);
+      if (id < 0)
+        throw Exception("error creating dataset");
+      herr_t err = H5Sselect_all(id);
+      if (err < 0)
+        throw Exception("error selecting the entire extent");
+      return Dataspace(id, internal::Tag());
+    }
+
+    bool is_all() const
+    {
+      H5S_sel_type sel = H5Sget_select_type(get_id());
+      if (sel < 0)
+        throw Exception("error geting select type");
+      return sel == H5S_SEL_ALL;
     }
     
     int get_rank() const
@@ -459,7 +527,7 @@ class Dataspace : public Object
     {
       herr_t r = H5Sselect_all(get_id());
       if (r < 0)
-        throw Exception("unable to select all");
+        throw Exception("error selecting the entire extent");
     }
 
     hssize_t get_select_npoints() const
@@ -470,6 +538,13 @@ class Dataspace : public Object
       return r;
     }
     
+    bool is_extent_equal(const Dataspace &other)
+    {
+      htri_t result = H5Sextent_equal(get_id(), other.get_id());
+      if (result < 0)
+        throw Exception("error determining if dataspace extents are equal");
+      return bool(result);
+    }
 };
 
 
@@ -536,50 +611,26 @@ class Attribute : public Object
 
     /* assuming that the memory dataspace equals disk dataspace */
     template<class T>
-    void read(Dataspace mem_space, T *values) const;
+    void read(T *values) const
+    {
+      Datatype memtype = get_memtype<T>();
+      RWattribute rw(this->get_id(), memtype.get_id());
+      h5traits_of<T>::type::read(rw, memtype, get_dataspace(), values);
+    }
 
     /* assuming that the memory dataspace equals disk dataspace */
     template<class T>
-    void write(Dataspace mem_space, T* values);
+    void write(T* values)
+    {
+      Datatype memtype = get_memtype<T>();
+      RWattribute rw(this->get_id(), memtype.get_id());
+      h5traits_of<T>::type::write(rw, memtype, get_dataspace(), values);
+    }
 };
 
 
-class RWattribute : public RW
-{
-  Attribute a;
-public:
-  RWattribute(hid_t id) : a(id, internal::Tag()) { a.inc_ref(); }
-  Datatype get_datatype() const { return a.get_datatype(); }
-  void write(const Datatype &dt, const void* buf)
-  {
-    herr_t err = H5Awrite(a.get_id(), dt.get_id(), buf);
-    if (err < 0)
-      throw Exception("error writing to attribute");
-  }
-  void read(const Datatype &dt, void *buf)
-  {
-    herr_t err = H5Aread(a.get_id(), dt.get_id(), buf);
-    if (err < 0)
-      throw Exception("error reading from attribute");
-  }
-};
+// Attribute.write -> h5traits_of<T>::type::write -> RW::write
 
-
-
-
-template<class T>
-inline void Attribute::read(Dataspace mem_space, T *values) const
-{
-  RWattribute rw(this->get_id());
-  h5traits_of<T>::type::read(rw, mem_space, values);
-}
-
-template<class T>
-inline void Attribute::write(Dataspace mem_space, T *values)
-{
-  RWattribute rw(this->get_id());
-  h5traits_of<T>::type::write(rw, mem_space, values);
-}
 
 
 
@@ -614,40 +665,41 @@ class Attributes
     void create(const std::string &name, const T &value)
     {
       auto sp = Dataspace::create_scalar();
-      create<T>(name, sp).write(sp, &value);
+      create<T>(name, sp).write(&value);
     }
 
     template<class T>
     void create(const std::string &name, Dataspace space, const T *values)
     {
-      create<T>(name, space).write(space, values);
+      create<T>(name, space).write(values);
     }
 
-    /*
-      If the attribute already exists, this function will first try
-      to write the data using the given Dataspace, and then return. If this fails, the
-      attribute is deleted and a new attribute is created using the provided dataspace.
-    */
     template<class T>
     void set(const std::string &name, Dataspace space, const T* values)
     {
       Attribute a;
       if (exists(name))
       {
-        AutoErrorReportingGuard disableErrorOutput;
-        try
+        a = open(name);
+        if (a.get_dataspace().is_extent_equal(space))
         {
-          a = open(name);
-          a.write(space, values);
-          return;
+          AutoErrorReportingGuard disableErrorOutput;
+          try
+          {
+
+            a.write(values);
+            return;
+          }
+          catch (const Exception &)
+          {
+            remove(name);
+          }
         }
-        catch (const Exception &)
-        {
+        else
           remove(name);
-        }
       }
       a = create<T>(name, space);
-      a.write(space, values);
+      a.write(values);
       return;
     }
 
@@ -678,8 +730,7 @@ class Attributes
     template<class T>
     void get(const std::string &name, T &value)
     {
-      Dataspace ds = Dataspace::create_scalar();
-      open(name).read(ds, &value);
+      open(name).read(&value);
     }
 
     template<class T>
@@ -691,9 +742,9 @@ class Attributes
     }
 
     template<class T>
-    void get(const std::string &name, Dataspace space, T* values)
+    void get(const std::string &name, T* values)
     {
-      open(name).read(space, values);
+      open(name).read(values);
     }
     
 #ifdef HDF_WRAPPER_HAS_BOOST
@@ -1025,17 +1076,19 @@ class Dataset : public Object
     }
 
     template<class T>
-    void write(hid_t disk_space_id, hid_t mem_space_id, const T* data)
+    void write(Dataspace memspace, hid_t disk_space_id, const T* data)
     {
-      Datatype dt = get_memtype<T>();
-      if (dt.get_size() == H5T_VARIABLE)
-        throw Exception("not implemented");
-      herr_t res = H5Dwrite(id, dt.get_id(),
-                            mem_space_id, disk_space_id,
-                            H5P_DEFAULT,
-                            (const void*)data);
-      if (res < 0)
-        throw Exception("error writing to dataset"+get_name());
+      Datatype  memtype = get_memtype<T>();
+      RWdataset rw(get_id(), memtype.get_id(), memspace.get_id(), disk_space_id);
+      h5traits_of<T>::type::write(rw, memtype, memspace, data);
+    }
+
+    template<class T>
+    void read(Dataspace memspace, hid_t disk_space_id, T* data) const
+    {
+      Datatype memtype = get_memtype<T>();
+      RWdataset rw(get_id(), memtype.get_id(), memspace.get_id(), disk_space_id);
+      h5traits_of<T>::type::read(rw, memtype, memspace, data);
     }
 
     Dataset(hid_t id, internal::Tag) : Object(id) {} // we get an existing reference, no need to increase the ref count. it will only be lowered by one when the instance is destroyed.
@@ -1052,12 +1105,6 @@ class Dataset : public Object
       if (id < 0)
         throw Exception("error creating dataset: "+name);
       return Dataset(id, internal::Tag());
-    }
-
-    template<class T>
-    void write(const T* data)
-    {
-      write(H5S_ALL, H5S_ALL, data);
     }
 
     template<class T>
@@ -1078,12 +1125,20 @@ class Dataset : public Object
       return ds;
     }
     
+    // TODO: reverse order of filespace and memspace arguments, in agreement with the c-api
     template<class T>
     void write(const Dataspace &file_space, const Dataspace &mem_space, const T* data)
     {
-      write(file_space.get_id(), mem_space.get_id(), data);
+      write(mem_space, file_space.get_id(), data);
     }
-    
+
+    template<class T>
+    void write(const T* data)
+    {
+      Dataspace ds = get_dataspace();
+      write(ds, H5S_ALL, data);
+    }
+
     static Properties create_creation_properties(const Dataspace &sp, DsCreationFlags flags)
     {
       Properties prop(H5P_DATASET_CREATE);
@@ -1107,18 +1162,19 @@ class Dataset : public Object
       return Dataspace(id, internal::Tag());
     }
 
-    template<class T>
-    void read_simple(T *data) const
+    Datatype get_datatype() const
     {
-      Datatype dt = get_memtype<T>();
-      if (dt.get_size() == H5T_VARIABLE)
-        throw Exception("not implemented");
-      herr_t res = H5Dread(this->id, dt.get_id(),
-                           H5S_ALL, H5S_ALL,
-                           H5P_DEFAULT,
-                           (void*)data);
-      if (res < 0)
-        throw Exception("error reading from dataset");
+      hid_t type_id = H5Dget_type(this->id);
+      if (type_id<0)
+        throw Exception("unable to get type of Attribute");
+      return Datatype(type_id);
+    }
+
+    template<class T>
+    void read(T *data) const
+    {
+      Dataspace ds = get_dataspace();
+      read(ds, H5S_ALL, data);
     }
 };
 
@@ -1160,17 +1216,18 @@ struct h5traits
   {
     return Datatype::createPod<T>(sel);
   }
-  
-  static inline void write(RW &rw, const Dataspace &space, const T *values)
+
+  static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const T *values)
   {
-    rw.write(value(IN_MEM), values);
+    rw.write(values);
   }
   
-  static inline void read(RW &rw, const Dataspace &space, T *values)
+  static inline void read(RW &rw, const Datatype &memtype, const Dataspace &memspace, T *values)
   {
-    rw.read(value(IN_MEM), values);
+    rw.read(values);
   }
 };
+
 
 template<>
 struct h5traits<std::string>
@@ -1180,49 +1237,32 @@ struct h5traits<std::string>
     return Datatype::createPod<const char*>(sel);
   }
 
-  static inline void write(RW &rw, const Dataspace &space, const std::string *values)
+  static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const std::string *values)
   {
-    int n = space.get_count();
+    int n = memspace.get_count();
     assert(n >= 1);
     std::vector<const char*> s(n);
     for (int i=0; i<n; ++i) s[i] = values[i].c_str();
-    rw.write(value(IN_MEM), &s[0]);
+    rw.write(&s[0]);
   }
 
-  static inline void read(RW &rw, const Dataspace &space, std::string *values)
+  static inline void read(RW &rw, const Datatype &memtype, const Dataspace &memspace, std::string *values)
   {
-    int n = space.get_count();
+    int n = memspace.get_count();
     assert(n >= 1);
-    Datatype disc_dt = rw.get_datatype();
-    if (H5Tis_variable_str(disc_dt.get_id())==0)
+    assert(H5Tis_variable_str(memtype.get_id()));
+
+    // see https://www.hdfgroup.org/HDF5/doc1.6/UG/11_Datatypes.html
+    // variable data sets. string types (char*, char[n], std::string) are mapped by default to variable length data types
+
+    std::vector<char*> buffers(n);
+    rw.read(&buffers[0]);
+    for (int i = 0; i < n; ++i)
     {
-      Datatype dt = Datatype::createFixedLenString(IN_MEM);
-      std::size_t len = disc_dt.get_size();
-      len += 1; // for null termi
-      dt.set_size(len);
-      std::vector<char> s(n*len);
-      rw.read(dt, &s[0]);
-      for (std::size_t i=0; i<n; ++i)
-      {
-        values[i].assign(&s[i*len]);
-      }
+      values[i].assign(buffers[i]);
     }
-    else
-    {
-      // see https://www.hdfgroup.org/HDF5/doc1.6/UG/11_Datatypes.html
-      // variable data sets. string types (char*, char[n], std::string) are mapped by default to variable length data types
-      Datatype dt = value(IN_MEM);
-      assert(H5Tis_variable_str(dt.get_id()));
-      int n = space.get_count();
-      std::vector<char*> buffers(n);
-      rw.read(dt, &buffers[0]);
-      for (int i = 0; i < n; ++i)
-      {
-        values[i].assign(buffers[i]);
-      }
-      // release the stuff that hdf5 allocated
-      H5Dvlen_reclaim(dt.get_id(), space.get_id(), H5P_DEFAULT, &buffers[0]);
-    }
+    // release the stuff that hdf5 allocated
+    H5Dvlen_reclaim(memtype.get_id(), memspace.get_id(), H5P_DEFAULT, &buffers[0]);
   }
 };
 
@@ -1235,22 +1275,31 @@ struct h5traits<char[n]>
     return Datatype::createPod<const char*>(sel);
   }
 
-  static inline void write(RW &rw, const Dataspace &space, const CharArray *values)
+  static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const CharArray *values)
   {
-    std::vector<const char*> s(space.get_count());
-    for (int i=0; i<s.size(); ++i) s[i] = values[i];
-    h5traits<const char*>::write(rw, space, &s[0]);
+    std::vector<const char*> s(memspace.get_count());
+    for (int i=0; i<s.size(); ++i) s[i] = values[i];  // because i don't know how to deal with an array of static char-arrays
+    rw.write(&s[0]);
   }
 };
 
-//// const char[n] added for visual c++2013
-//template<size_t n>
-//struct as_h5_datatype<const char [n]>
-//{
-//  typedef char CharArray[n];
-//  static inline Datatype value(DatatypeSelect sel) { return as_h5_datatype<char[n]>::value(sel); }
-//  static inline void write(RW &rw, const Dataspace &space, const CharArray *values)  { return as_h5_datatype<char[n]>::write(rw, space, values); }
-//};
+
+template<>
+struct h5traits < char* >
+{
+  static inline Datatype value(DatatypeSelect sel)
+  {
+    return Datatype::createPod<const char*>(sel);
+  }
+
+  static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const char *const *values)
+  {
+    rw.write(values);
+  }
+
+  // TODO: enable reading. Needs treatment similar to std::string. Don't want references to memory allocated by HDF5 lib to propagate through the program that uses the library!
+};
+
 
 template<class T>
 struct h5traits_of
