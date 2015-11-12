@@ -17,17 +17,15 @@ using namespace std;
 using namespace my;
 
 
-struct Failtype
-{
-  int a;
-  float b;
-};
-
-
 void WriteFile()
 {
   h5::disableAutoErrorReporting();
 
+  {
+    h5::Datatype ds_int1 = h5::get_disktype<int>();
+    h5::Datatype ds_int2 = h5::get_disktype<int>();
+    cout << "ds_int1 id = " << ds_int1.get_id() << " vs. ds_int2 id = " << ds_int2.get_id() << endl;
+  }
   h5::File file("test.h5", "w");
   h5::Group root = file.root();
   h5::Group g = root.create_group("testing_the_group");
@@ -53,9 +51,6 @@ void WriteFile()
   a.remove("to_be_deleted");
   a.set("attrib_overwrite_test", "erased and recreated!");
 
-  //a = g.attrs();
-  //a.set<Failtype>("failtest", Failtype());
-  
   vector<float> data(10);
   for(int i=0; i<data.size(); ++i)
     data[i] = i*i;

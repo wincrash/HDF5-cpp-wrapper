@@ -45,11 +45,10 @@ class Group;
 
 namespace internal
 {
-
-struct Tag {};
 struct TagOpen {};
 struct TagCreate {};
-struct IncRef {};
+struct IncRC {};
+struct NoIncRC {};
 }
 
 static void disableAutoErrorReporting()
@@ -76,7 +75,8 @@ public:
   }
 };
 
-
+namespace internal
+{
 /*
   hack around a strange issue: err_desc is partially filled with garbage (func_name, file_name, desc). Therefore,
   this custom error printer is used.
@@ -119,6 +119,7 @@ static herr_t custom_print_cb(unsigned n, const H5E_error2_t *err_desc, void* cl
   return 0;
 }
 
+} // namespace internal
 
 class Exception : public std::exception
 {
@@ -130,7 +131,7 @@ class Exception : public std::exception
       // implement nice exception messages that need string manipulation
 #elif (defined _MSC_VER) || (defined __GNUG__)
       msg.append(". Error Stack:");
-      H5Ewalk2(H5E_DEFAULT, H5E_WALK_DOWNWARD, &custom_print_cb, &msg);
+      H5Ewalk2(H5E_DEFAULT, H5E_WALK_DOWNWARD, &internal::custom_print_cb, &msg);
 #endif
     }
     Exception() : msg("Unspecified error") { assert(false); }
@@ -196,7 +197,7 @@ class Object
       check_valid_throw();
     }
 
-    Object(hid_t id, internal::IncRef) : id(id)
+    Object(hid_t id, internal::IncRC) : id(id)
     {
       check_valid_throw();
       inc_ref();
@@ -240,7 +241,6 @@ class Object
       return other.id == this->id;
     }
 
-protected:
     void inc_ref()
     {
       if (id < 0) return;
@@ -259,12 +259,8 @@ protected:
         id = -1;
     }
 
+protected:
 		hid_t id;
-};
-
-enum DatatypeSelect {
-  ON_DISK,
-  IN_MEM
 };
 
 
@@ -273,29 +269,43 @@ class Datatype : public Object
   private:
     friend class Attribute;
     friend class Dataset;
-    struct ConsFromPreset {};
-    Datatype(hid_t id, ConsFromPreset) : Object() 
-    {  
-      this->id = H5Tcopy(id);
-      if (this->id < 0)
-        throw Exception("error initializing from prescribed data type");
-    }
-    Datatype(hid_t id) : Object(id) {}
-  public: 
+    
+    //struct ConsFromPreset {};
+    //Datatype(hid_t id, ConsFromPreset) : Object() 
+    //{  
+    //  this->id = H5Tcopy(id);
+    //  if (this->id < 0)
+    //    throw Exception("error copying datatype");
+    //}
 
+  public: 
+    Datatype(hid_t id) : Object(id) {}
+    Datatype(hid_t id, internal::IncRC) : Object(id, internal::IncRC()) {}
     Datatype() : Object() {}
     
-    template<class T>
-    static Datatype createPod(DatatypeSelect)
+    //template<class T>
+    //static Datatype createPod(DatatypeSelect)
+    //{
+    //  static_assert(false, "specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
+    //  //assert(false);
+    //  //throw Exception("specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
+    //}
+
+    //template<class T>
+    //friend static Datatype createPodMemType();
+
+    static Datatype copy(hid_t id)
     {
-      //static_assert(false, "specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
-      assert(false);
-      throw Exception("specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
+      hid_t newid = H5Tcopy(id);
+      if (newid < 0)
+        throw Exception("error copying datatype");
+      return Datatype(newid);
     }
-    static Datatype createFixedLenString(DatatypeSelect)
-    {
-      return Datatype(H5T_C_S1, ConsFromPreset());
-    }
+
+    //static Datatype createFixedLenString(DatatypeSelect)
+    //{
+    //  return Datatype(H5T_C_S1, ConsFromPreset());
+    //}
 
     static Datatype createArray(const Datatype &base, int ndims, int *dims)
     {
@@ -331,39 +341,15 @@ class Datatype : public Object
         throw Exception("cannot compare datatypes");
       return res != 0;
     }
+
+    void lock()
+    {
+      herr_t err = H5Tlock(get_id());
+      if (err < 0)
+        throw Exception("error locking datatype");
+    }
 };
 
-#define HDF5_WRAPPER_SPECIALIZE_TYPE(t, tid, dtid) \
-  template<> inline Datatype Datatype::createPod<t>(DatatypeSelect sel) { return Datatype(sel == ON_DISK ? dtid : tid, ConsFromPreset()); }\
-
-HDF5_WRAPPER_SPECIALIZE_TYPE(int, H5T_NATIVE_INT, H5T_STD_I32LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned int, H5T_NATIVE_UINT, H5T_STD_U32LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned long long, H5T_NATIVE_ULLONG, H5T_STD_U64LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(long long, H5T_NATIVE_LLONG, H5T_STD_I64LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(char, H5T_NATIVE_CHAR, H5T_STD_I8LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned char, H5T_NATIVE_UCHAR, H5T_STD_U8LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(float, H5T_NATIVE_FLOAT, H5T_IEEE_F32LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(double, H5T_NATIVE_DOUBLE, H5T_IEEE_F64LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(bool, H5T_NATIVE_CHAR, H5T_STD_U8LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned long, H5T_NATIVE_ULONG, H5T_STD_U64LE)
-HDF5_WRAPPER_SPECIALIZE_TYPE(long, H5T_NATIVE_LONG, H5T_STD_I64LE)
-
-template<> inline Datatype Datatype::createPod<const char *>(DatatypeSelect sel)
-{
-  Datatype dt(H5T_C_S1, ConsFromPreset());
-  dt.set_variable_size();
-  return dt;
-}
-
-template<> inline Datatype Datatype::createPod<char*>(DatatypeSelect sel)
-{
-  return createPod<const char*>(sel);
-}
-
-template<> inline Datatype Datatype::createPod<std::string>(DatatypeSelect sel)
-{
-  return createPod<const char*>(sel);
-}
 
 
 /*
@@ -430,8 +416,8 @@ class Dataspace : public Object
     friend class Attributes;
     friend class Attribute;
   private:
-    Dataspace(hid_t id, internal::Tag) : Object(id) {}
-    Dataspace(hid_t id, internal::IncRef) : Object(id, internal::IncRef()) {}
+    Dataspace(hid_t id, internal::NoIncRC) : Object(id) {}
+    Dataspace(hid_t id, internal::IncRC) : Object(id, internal::IncRC()) {}
   public:
     static Dataspace create_nd(const hsize_t* dims, const hsize_t ndims)
     {
@@ -444,7 +430,7 @@ class Dataspace : public Object
           oss << dims[i] << ",";
         throw Exception(oss.str());
       }
-      return Dataspace(id, internal::Tag());
+      return Dataspace(id, internal::NoIncRC());
     }
     
     static Dataspace create_scalar() 
@@ -452,7 +438,7 @@ class Dataspace : public Object
       hid_t id = H5Screate(H5S_SCALAR);
       if (id < 0)
         throw Exception("error creating scalar dataspace");
-      return Dataspace(id, internal::Tag());
+      return Dataspace(id, internal::NoIncRC());
     }
 
     static Dataspace create_all()
@@ -463,7 +449,7 @@ class Dataspace : public Object
       herr_t err = H5Sselect_all(id);
       if (err < 0)
         throw Exception("error selecting the entire extent");
-      return Dataspace(id, internal::Tag());
+      return Dataspace(id, internal::NoIncRC());
     }
 
     bool is_all() const
@@ -569,7 +555,7 @@ class Attribute : public Object
   friend class RWattribute;
     using Object::inc_ref;
   private:       
-    Attribute(hid_t id, internal::Tag) : Object(id) {}
+    Attribute(hid_t id, internal::NoIncRC) : Object(id) {}
       
     Attribute(hid_t loc_id, const std::string &name, hid_t type_id, hid_t space_id, hid_t acpl_id, hid_t aapl_id, internal::TagCreate)
     {
@@ -598,7 +584,7 @@ class Attribute : public Object
       hid_t id = H5Aget_space(this->id);
       if (id < 0)
         throw Exception("unable to get dataspace of Attribute");
-      return Dataspace(id, internal::Tag());
+      return Dataspace(id, internal::NoIncRC());
     }
 
     Datatype get_datatype() const
@@ -949,7 +935,7 @@ inline iterator Group::end()
 
 class File : public Object
 {
-    File(hid_t id, internal::Tag) : Object(id) {} // takes a file handle that needs to be closed.
+    File(hid_t id, internal::NoIncRC) : Object(id) {} // takes a file handle that needs to be closed.
     friend class Object; // because Object need to construct File using the above constructor.
   public:
     explicit File(hid_t id) : Object() { this->inc_ref(); } // a logical copy of the original given by id, we inc reference count so the source can release its handle
@@ -1040,7 +1026,7 @@ inline File Object::get_file() const
   // https://www.hdfgroup.org/HDF5/doc/RM/RM_H5I.html#Identify-GetFileId
   if (fid < 0)
     throw Exception("cannot get file id from object");
-  return File(fid, internal::Tag());
+  return File(fid, internal::NoIncRC());
 }
 
 
@@ -1091,7 +1077,7 @@ class Dataset : public Object
       h5traits_of<T>::type::read(rw, memtype, memspace, data);
     }
 
-    Dataset(hid_t id, internal::Tag) : Object(id) {} // we get an existing reference, no need to increase the ref count. it will only be lowered by one when the instance is destroyed.
+    Dataset(hid_t id, internal::NoIncRC) : Object(id) {} // we get an existing reference, no need to increase the ref count. it will only be lowered by one when the instance is destroyed.
     
   public:
     Dataset() : Object() {}
@@ -1104,7 +1090,7 @@ class Dataset : public Object
                             H5P_DEFAULT, prop.get_id(), H5P_DEFAULT);
       if (id < 0)
         throw Exception("error creating dataset: "+name);
-      return Dataset(id, internal::Tag());
+      return Dataset(id, internal::NoIncRC());
     }
 
     template<class T>
@@ -1159,7 +1145,7 @@ class Dataset : public Object
       hid_t id = H5Dget_space(this->id);
       if (id < 0)
         throw Exception("unable to get dataspace of dataset");
-      return Dataspace(id, internal::Tag());
+      return Dataspace(id, internal::NoIncRC());
     }
 
     Datatype get_datatype() const
@@ -1203,18 +1189,96 @@ inline boost::optional<Dataset> Group::try_open_dataset(const std::string &name)
     else
       return boost::optional<Dataset>(); // no dataset under this name
   }
-  else return boost::optional<Dataset>(Dataset(id, internal::Tag()));
+  else return boost::optional<Dataset>(Dataset(id, internal::NoIncRC()));
 }
 #endif
+
+
+
+
+namespace internal
+{
+
+/* This section deals with creation of Datatype objects for basic data types.
+   Copy is used on HDF API constants like "H5T_NATIVE_INT" because Datatype
+   object cannot handle these constants. This is because H5T_NATIVE_INT, etc.
+   are apparently not real objects, i.e. H5O_isvalid indicates false. Some special
+   case handling for these constants might be needed instead.
+*/
+template<class T>
+inline Datatype get_memtype()
+{
+  static_assert (false, "specialize me!");
+}
+
+template<class T>
+inline Datatype get_disktype()
+{
+  static_assert (false, "specialize me!");
+}
+
+
+#define HDF5_WRAPPER_SPECIALIZE_TYPE(T, tid, dtid) \
+template<> inline Datatype get_memtype<T>() \
+{ \
+  return Datatype::copy(tid); \
+} \
+template<> inline Datatype get_disktype<T>()  \
+{ \
+  return Datatype::copy(dtid); \
+}
+
+
+HDF5_WRAPPER_SPECIALIZE_TYPE(int, H5T_NATIVE_INT, H5T_STD_I32LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned int, H5T_NATIVE_UINT, H5T_STD_U32LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned long long, H5T_NATIVE_ULLONG, H5T_STD_U64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(long long, H5T_NATIVE_LLONG, H5T_STD_I64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(char, H5T_NATIVE_CHAR, H5T_STD_I8LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned char, H5T_NATIVE_UCHAR, H5T_STD_U8LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(float, H5T_NATIVE_FLOAT, H5T_IEEE_F32LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(double, H5T_NATIVE_DOUBLE, H5T_IEEE_F64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(bool, H5T_NATIVE_CHAR, H5T_STD_U8LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(unsigned long, H5T_NATIVE_ULONG, H5T_STD_U64LE)
+HDF5_WRAPPER_SPECIALIZE_TYPE(long, H5T_NATIVE_LONG, H5T_STD_I64LE)
+
+
+template<> inline Datatype get_memtype<const char *>()
+{
+  Datatype dt = Datatype::copy(H5T_C_S1);
+  dt.set_variable_size();
+  return dt;
+}
+template<> inline Datatype get_disktype<const char *>()
+{
+  return get_memtype<const char*>();
+}
+
+template<> inline Datatype get_memtype<char*>()
+{
+  return get_memtype<const char*>();
+}
+
+template<> inline Datatype get_disktype<char *>()
+{
+  return get_memtype<char*>();
+}
+
+} // namespace internal
+
 
 
 
 template<class T>
 struct h5traits
 {
-  static inline Datatype value(DatatypeSelect sel)
+  static inline Datatype get_memtype()
   {
-    return Datatype::createPod<T>(sel);
+    return internal::get_memtype<T>();
+  }
+
+  static inline Datatype get_disktype()
+  {
+    return internal::get_disktype<T>();
   }
 
   static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const T *values)
@@ -1232,9 +1296,14 @@ struct h5traits
 template<>
 struct h5traits<std::string>
 {
-  static inline Datatype value(DatatypeSelect sel)
+  static inline Datatype get_memtype()
   {
-    return Datatype::createPod<const char*>(sel);
+    return internal::get_memtype<char*>();
+  }
+
+  static inline Datatype get_disktype()
+  {
+    return internal::get_disktype<char*>();
   }
 
   static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const std::string *values)
@@ -1266,13 +1335,20 @@ struct h5traits<std::string>
   }
 };
 
+
 template<size_t n>
 struct h5traits<char[n]>
 {
   typedef char CharArray[n];
-  static inline Datatype value(DatatypeSelect sel)
+
+  static inline Datatype get_memtype()
   {
-    return Datatype::createPod<const char*>(sel);
+    return internal::get_memtype<char*>();
+  }
+
+  static inline Datatype get_disktype()
+  {
+    return internal::get_disktype<char*>();
   }
 
   static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const CharArray *values)
@@ -1287,37 +1363,63 @@ struct h5traits<char[n]>
 template<>
 struct h5traits < char* >
 {
-  static inline Datatype value(DatatypeSelect sel)
+  static inline Datatype get_memtype()
   {
-    return Datatype::createPod<const char*>(sel);
+    return internal::get_memtype<char*>();
+  }
+
+  static inline Datatype get_disktype()
+  {
+    return internal::get_disktype<char*>();
   }
 
   static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const char *const *values)
   {
     rw.write(values);
   }
-
   // TODO: enable reading. Needs treatment similar to std::string. Don't want references to memory allocated by HDF5 lib to propagate through the program that uses the library!
 };
 
 
+// the rest of the api uses h5traits_of to get rid of const and volatile qualifiers
 template<class T>
 struct h5traits_of
 {
   typedef typename std::remove_cv<T>::type stripped_type;
-  typedef h5traits<stripped_type> type;
+  typedef h5traits<stripped_type> type;  // the resulting "clean" traits type
 };
 
+
+/*
+Here is this super ugly code using "global", i.e. static variables. Using hid_t as static
+variable type because no destructor calls are allowed because they would call
+hdf api functions when the hdf lib is unloaded already.
+*/
+namespace internal
+{
+
+inline hid_t prep_type_cache(Datatype dt)
+{
+  dt.lock();
+  dt.inc_ref();
+  return dt.get_id();
+}
+
+}
+
+// wrap complicated things in neat api functions
 template<class T>
 inline Datatype get_disktype()
 {
-  return h5traits_of<T>::type::value(ON_DISK);
+  static hid_t id = internal::prep_type_cache(h5traits_of<T>::type::get_disktype());
+  return Datatype(id, internal::IncRC());
 }
 
 template<class T>
 inline Datatype get_memtype()
 {
-  return h5traits_of<T>::type::value(IN_MEM);
+  static hid_t id = internal::prep_type_cache(h5traits_of<T>::type::get_memtype());
+  return Datatype(id, internal::IncRC());
 }
 
 } // namespace h5
