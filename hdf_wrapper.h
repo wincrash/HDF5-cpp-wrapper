@@ -6,6 +6,7 @@
 #include <string>// for dealing with strings in exceptions, mostly
 #include <sstream>// for dealing with strings in exceptions, mostly
 #include <type_traits> // for removal of const qualifiers
+#include <limits>
 
 #include <assert.h>
 #include <vector>
@@ -23,14 +24,11 @@
 
 #ifdef HDF_WRAPPER_HAS_BOOST
   #include <boost/optional.hpp>
+  #include <boost/static_assert.hpp>
 #endif
 
 
-
-namespace my
-{
-
-namespace h5
+namespace h5cpp
 {
 
 class Object;
@@ -99,13 +97,14 @@ static herr_t custom_print_cb(unsigned n, const H5E_error2_t *err_desc, void* cl
 
   if (H5Eget_msg(err_desc->min_num, NULL, min, MSG_SIZE)<0)
     return -1;
-
+  
+  const char* fmt = " * %s %s: %s";
 #if (defined __APPLE__) // not even tested to compile this
-  snprintf(buffer, MSG_SIZE, "  () Class: %s, Major: %s, Minor: %s", cls, maj, min);    
+  snprintf(buffer, MSG_SIZE, fmt, cls, maj, min);    
 #elif (defined _MSC_VER)
-  sprintf_s(buffer, MSG_SIZE, "  () Class: %s, Major: %s, Minor: %s", cls, maj, min);
+  sprintf_s(buffer, MSG_SIZE, fmt, cls, maj, min);
 #elif (defined __GNUG__)
-  snprintf(buffer, MSG_SIZE, "  () Class: %s, Major: %s, Minor: %s", cls, maj, min);
+  snprintf(buffer, MSG_SIZE, fmt, cls, maj, min);
 #endif
   buffer[MSG_SIZE - 1] = 0; // its the only way to be sure ...
   try
@@ -269,30 +268,11 @@ class Datatype : public Object
   private:
     friend class Attribute;
     friend class Dataset;
-    
-    //struct ConsFromPreset {};
-    //Datatype(hid_t id, ConsFromPreset) : Object() 
-    //{  
-    //  this->id = H5Tcopy(id);
-    //  if (this->id < 0)
-    //    throw Exception("error copying datatype");
-    //}
 
   public: 
     Datatype(hid_t id) : Object(id) {}
     Datatype(hid_t id, internal::IncRC) : Object(id, internal::IncRC()) {}
     Datatype() : Object() {}
-    
-    //template<class T>
-    //static Datatype createPod(DatatypeSelect)
-    //{
-    //  static_assert(false, "specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
-    //  //assert(false);
-    //  //throw Exception("specialize template<class T> Datatype as_h5_datatype(DatatypeSelect) for this type");
-    //}
-
-    //template<class T>
-    //friend static Datatype createPodMemType();
 
     static Datatype copy(hid_t id)
     {
@@ -301,11 +281,6 @@ class Datatype : public Object
         throw Exception("error copying datatype");
       return Datatype(newid);
     }
-
-    //static Datatype createFixedLenString(DatatypeSelect)
-    //{
-    //  return Datatype(H5T_C_S1, ConsFromPreset());
-    //}
 
     static Datatype createArray(const Datatype &base, int ndims, int *dims)
     {
@@ -615,9 +590,6 @@ class Attribute : public Object
 };
 
 
-// Attribute.write -> h5traits_of<T>::type::write -> RW::write
-
-
 
 
 class Attributes
@@ -637,7 +609,7 @@ class Attributes
     template<class T>
     Attribute create(const std::string &name, const Dataspace &space)
     {
-      Datatype disktype = my::h5::get_disktype<T>();
+      Datatype disktype = get_disktype<T>();
       Attribute a(attributed_object.get_id(),
                   name,
                   disktype.get_id(),
@@ -1208,13 +1180,14 @@ namespace internal
 template<class T>
 inline Datatype get_memtype()
 {
-  static_assert (false, "specialize me!");
+  // writing sizeof(T)==0 seems to work for gcc. just writing false always causes an error????!
+  static_assert (sizeof(T)==0, "specialize me!");
 }
 
 template<class T>
 inline Datatype get_disktype()
 {
-  static_assert (false, "specialize me!");
+  static_assert (sizeof(T)==0, "specialize me!");
 }
 
 
@@ -1422,8 +1395,7 @@ inline Datatype get_memtype()
   return Datatype(id, internal::IncRC());
 }
 
-} // namespace h5
+} // namespace h5cpp
 
-} // namespace my
 
 #endif

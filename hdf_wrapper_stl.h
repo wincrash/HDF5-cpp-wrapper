@@ -7,10 +7,8 @@
 
 #include "hdf_wrapper.h"
 
-namespace my
-{
-  
-namespace h5
+
+namespace h5cpp
 {
 
 enum { contiguous_mem = 1 };
@@ -55,13 +53,13 @@ inline void read_dataset_stl(const Dataset ds, iterator begin, iterator end, boo
     Dataspace sp = ds.get_dataspace();
     if (sp.get_count() != size)
       throw Exception("buffer size mismatch");
-    ds.read_simple(data);
+    ds.read(data);
   }
   else
   {
     size_t cnt =  ds.get_dataspace().get_count();
     std::vector<value_type> buffer(cnt);
-    ds.read_simple(&buffer[0]);
+    ds.read(&buffer[0]);
 
     std::copy(buffer.begin(), buffer.end(), begin);
   }
@@ -129,6 +127,5 @@ inline void set_array_attribute_range(Attributes attrs, const std::string &name,
 
 }
 
-}
 
 #endif

@@ -13,9 +13,7 @@
 using boost::str;
 using boost::format;
 using namespace std;
-
-using namespace my;
-
+namespace h5 = h5cpp;
 
 void WriteFile()
 {
@@ -43,7 +41,7 @@ void WriteFile()
   {
       a.create<float>("to_be_deleted", 9002.0); 
   }
-  catch (my::h5::Exception &e)
+  catch (h5::Exception &e)
   {
     cout << "Attempt to create two attributes under the same name correctly failed with error message:" << endl;
     cout << e.what() << endl;
