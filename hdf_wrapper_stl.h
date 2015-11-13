@@ -13,12 +13,19 @@ namespace h5cpp
 
 enum { contiguous_mem = 1 };
 
+template<class iterator>
+inline Dataspace create_dataspace_stl(iterator begin, iterator end)
+{
+  std::vector<hsize_t> x;
+  std::copy(begin, end, std::back_insert_iterator<std::vector<hsize_t> >(x));
+  return Dataspace::create_nd(&x[0], x.size());
+}
+
+
 template<class Range>
 inline Dataspace create_dataspace_from_range(const Range &dims)
 {
-  std::vector<hsize_t> x;
-  std::copy(dims.begin(), dims.end(), std::back_insert_iterator<std::vector<hsize_t> >(x));
-  return Dataspace::create_nd(&x[0], x.size());
+  return create_dataspace_stl(dims.begin(), dims.end());
 }
 
 

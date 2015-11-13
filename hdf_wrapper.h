@@ -245,7 +245,7 @@ class Object
       if (id < 0) return;
       int r = H5Iinc_ref(id);
       if (r < 0)
-        throw Exception("cannot inc ref count");
+        throw Exception("error inc ref count");
     }
 
     void dec_ref()
@@ -253,11 +253,20 @@ class Object
       if (id < 0) return;
       int r = H5Idec_ref(id);
       if (r < 0)
-        throw Exception("cannot dec ref count");
+        throw Exception("error dec ref count");
       if (H5Iis_valid(id) > 0)
         id = -1;
     }
 
+    int get_ref()
+    {
+      if (id < 0) return 0;
+      int r = H5Iget_ref(id);
+      if (r < 0)
+	throw Exception("error getting ref count");
+      return r;
+    }
+    
 protected:
 		hid_t id;
 };
