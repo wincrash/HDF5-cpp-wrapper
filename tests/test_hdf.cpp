@@ -1,17 +1,12 @@
 
-#include <boost/foreach.hpp>
-#include <boost/format.hpp>
-#include <boost/tuple/tuple.hpp>
-#include <boost/assign/std/vector.hpp>
+#define _USE_MATH_DEFINES
 #include <iostream>
 #include <vector>
+#include <cmath>
 
 #include "hdf_wrapper.h"
 #include "hdf_wrapper_stl.h"
 
-
-using boost::str;
-using boost::format;
 using namespace std;
 namespace h5 = h5cpp;
 
@@ -62,7 +57,7 @@ void WriteFile()
     cout << e.what() << endl;
   }
   a.remove("to_be_deleted");
-  a.create("to_be_deleted", "really gone?");
+  a.create("to_be_deleted", "really gone? (it is okay if you see this)");
   a.set<string>("attrib_overwrite_test1", "erased and recreated!");
   a.set<int>("attrib_overwrite_test2", 3); // should just write into the existing space
   
@@ -85,17 +80,21 @@ void WriteFile()
 
   // dataspaces
   h5::Dataspace sp_scalar = h5::Dataspace::create_scalar();
-  h5::Dataspace sp_all    = h5::Dataspace::create_all();
+  assert(sp_scalar.is_valid());
   h5::Dataspace sp1       = h5::create_dataspace(10,20,30); // three dimensional dataset with dimensions 10 x 20 x 30
+  assert(sp1.is_valid());
   hsize_t dims[3] = { 10, 20, 30};
   h5::Dataspace sp2       = h5::Dataspace::create_nd(dims, 3);
+  assert(sp2.is_valid());
   vector<int> dims_vec; 
   dims_vec.push_back(10);
   dims_vec.push_back(20);
   dims_vec.push_back(30);
   // following two create function are found in hdf_wrapper_stl.h
   h5::Dataspace sp5       = h5::create_dataspace_from_range(dims_vec); // calls dims_vec.begin(), dims_vec.end() 
+  assert(sp5.is_valid());
   h5::Dataspace sp6       = h5::create_dataspace_stl((hsize_t*)dims, dims+3); // good old pointer arithmetic
+  assert(sp6.is_valid());
   // TODO: check if these dataspaces are okay
   
   // array attributes
@@ -121,9 +120,9 @@ void WriteFile()
   
   vector<float> data(10);
   for(int i=0; i<data.size(); ++i)
-    data[i] = i*i;
+    data[i] = (float)i*i;
   
-  vector<int> sizes(1, data.size());  // one-dimensional
+  vector<int> sizes(1, (int)data.size());  // one-dimensional
   h5::Dataset ds = h5::Dataset::create_simple(g, "testds", h5::create_dataspace_from_range(sizes), &data[0]);
   ds.attrs().create("someAttr", 7);
   
@@ -140,7 +139,7 @@ void WriteFile()
 					h5::get_disktype<double>(), 
 					sp6,
 					h5::Dataset::create_creation_properties(sp6, h5::COMPRESSED));
-  ds2.write(sp_all, sp_all, &bigdata[0]);  // TODO: fails because sp_all!
+  ds2.write(sp6, sp6, &bigdata[0]);
 
   cout << "-- hyperslab selection --" << endl;
   { // selection test
@@ -155,61 +154,25 @@ void WriteFile()
     int memdata[] = { 1, 2, 3, 4 };
 
     h5::Dataspace memsp = h5::create_dataspace(4);
-    ds.write(sp, memsp, &memdata[0]);
+    ds.write(memsp, sp, &memdata[0]);
 
     offset[0] = 1;
     offset[1] = 1;
     sp.select_hyperslab(offset, stride, count, block);
-    ds.write(sp, memsp, &memdata[0]);  // writes to [1 .. 5] x [1 .. 1]
+    ds.write(memsp, sp, &memdata[0]);  // writes to [1 .. 5] x [1 .. 1]
   }
 }
 
-#if 0
+#if 1
 void ReadFile()
 {
   cout << "=== Reading ===" << endl;
   
   h5::File file("test.h5", "r");
   h5::Group root = file.root();
-  h5::Dataset ds = file.root().open_group("testing_the_group").open_dataset("testds");
-  h5::Dataspace sp = ds.get_dataspace();
-  
-  vector<int> sizes = sp.get_dims();
-  cout << "dataset size = ";
-  BOOST_FOREACH(int q, sizes)
-  {
-    cout << q << " ";
-  }
-  cout << endl;
-  
-  vector<float> data(sp.get_count());
-  ds.read<float>(&data[0]);
-  cout << "dataset = ";
-  BOOST_FOREACH(float q, data)
-    cout << q << " ";
-  cout << endl;
-  
-  string s = root.attrs().get<string>("c_str_attr");
-  cout << "string attribute: " << s << endl;
-  
-  h5::Attributes a = ds.attrs();
-  int static_ints[6];
-  a.get("ints", static_ints);
-  cout << "static ints";
-  for (int i=0; i<6; ++i)
-    cout << " " << static_ints[i];
-  cout << endl;
-  
-  vector<string> string_vec;
-  h5::Attribute at = a.open("strings");
-  int size = at.get_dataspace().get_count();
-  cout << "string_vec (" << size << ") ";
-  cout.flush();
-  string_vec.resize(size);
-  at.read(&string_vec[0]);
-  for (int i=0; i<string_vec.size(); ++i)
-    cout << " " << string_vec[i];
-  cout << endl;
+  h5::Dataset ds;
+
+  cout << "-- group management and attribute R/W tests --" << endl;
 
   assert(root.is_valid());
   cout << root.get_name() << " has " << root.size() << " children." << endl;
@@ -225,17 +188,76 @@ void ReadFile()
   {
     cout << "\t" << *it << endl;
   }
+ 
+  string s = root.attrs().get<string>("c_str_attr");
+  cout << "string attribute: " << s << endl;
+  
+  h5::Attributes attrs = root.open_group("second_group/third_group").attrs();
+  h5::Attribute a = attrs.open("ints");
+  assert(a.get_dataspace().get_count() == 6);
+  int static_ints[6];
+  a.read(static_ints);
+  cout << "static ints";
+  for (int i=0; i<6; ++i)
+    cout << " " << static_ints[i];
+  cout << endl;
+  
+  vector<string> string_vec;
+  a = attrs.open("strings1");
+  hsize_t size = a.get_dataspace().get_count();
+  cout << "string_vec (" << size << ") ";
+  string_vec.resize(size);
+  a.read(&string_vec[0]);
+  for (int i=0; i<string_vec.size(); ++i)
+    cout << " " << string_vec[i];
+  cout << endl;
 
-#if 0
+  cout << "-- datasets --" << endl;
+
   {
-    cout << "reading testfield" << endl;
-    Array3d<float> arr;
-    LatticeDataQuad3d ld;
-    ReadHdfLd(root.open_group("field_ld"), ld);
-    ReadArray3D<float>(root.open_dataset("test_field"), arr);
-    PrintArray<>(arr);
+    ds = file.root().open_group("testing_the_group").open_dataset("testds");
+    h5::Dataspace sp = ds.get_dataspace();
+    hsize_t dims[H5S_MAX_RANK];
+    int r = sp.get_dims(dims);
+    cout << "dataset rank = " << r << ", dims = ";
+    for (int i = 0; i < r; ++i)
+    {
+      cout << dims[i] << " ";
+    }
+    cout << endl;
+
+    vector<float> data(sp.get_count());
+    ds.read<float>(&data[0]);
+    cout << "dataset = ";
+    for (auto it = data.begin(); it != data.end(); ++it)
+    {
+      cout << *it << ", ";
+    }
+    cout << endl;
   }
-#endif
+
+  cout << "-- hyperslab selection --" << endl;
+  /* for reference: "Dataspace dimensions are numbered from 1 to rank. 
+  HDF5 uses C storage conventions, assuming that the last listed dimension 
+  is the fastest-changing dimension and the first-listed dimension is the 
+  slowest chang­ing."
+  */
+  int expected_value[5][2] = {
+    { 1, 0 }, { 2, 1 }, { 3, 2 }, { 4, 3 }, { 0, 4 }
+  };
+  ds = file.root().open_dataset("select_test_ds");
+  hsize_t dims[H5S_MAX_RANK];
+  ds.get_dataspace().get_dims(dims);
+  printf("dims = (%i, %i)\n", dims[0], dims[1]);
+  vector<int> data; h5::read_dataset_stl_resizing(ds, data);
+  const int NX = 5, NY = 2;
+  for (int y = 0; y < NY; ++y)
+  for (int x = 0; x < NX; ++x)
+    {
+      int value = data[x*NY + y];
+      printf("(%i, %i) = %i\n", x, y, value);
+      assert(value == expected_value[x][y]);
+    }
 }
 #endif
 
@@ -244,7 +266,7 @@ int main(int argc, char **argv)
 {
   h5::disableAutoErrorReporting();  // don't print to stderr
   WriteFile();
-  //ReadFile();
+  ReadFile();
   cin.get();
   return 0;
 }

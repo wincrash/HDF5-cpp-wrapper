@@ -16,6 +16,7 @@
       // implement nice exception messages that need string manipulation
 #elif (defined _MSC_VER)
   #include <stdio.h> // for FILE stream manipulation
+#pragma warning (disable : 4800)  // performance warning for conversion to bool
 #elif (defined __GNUG__)
   #include <stdio.h>
 #endif
@@ -24,7 +25,6 @@
 
 #ifdef HDF_WRAPPER_HAS_BOOST
   #include <boost/optional.hpp>
-  #include <boost/static_assert.hpp>
 #endif
 
 
@@ -177,7 +177,7 @@ class Object
     Object& operator=(const Object &o)
     {
       if (id == o.id) return *this;
-      dec_ref();
+      this->~Object();
       id = o.id;
       inc_ref();
       return *this;
@@ -403,14 +403,20 @@ class Dataspace : public Object
     Dataspace(hid_t id, internal::NoIncRC) : Object(id) {}
     Dataspace(hid_t id, internal::IncRC) : Object(id, internal::IncRC()) {}
   public:
-    static Dataspace create_nd(const hsize_t* dims, const hsize_t ndims)
+    virtual ~Dataspace()
     {
-      hid_t id = H5Screate_simple(ndims, dims, NULL);
+      if (this->id == H5S_ALL)
+        this->id = -1;
+    }
+
+    static Dataspace create_nd(const hsize_t* dims, int rank)
+    {
+      hid_t id = H5Screate_simple(rank, dims, NULL);
       if (id < 0)
       {
         std::ostringstream oss;
-        oss << "error creating dataspace with rank " << ndims << " and sizes ";
-        for (int i=0; i<ndims; ++i)
+        oss << "error creating dataspace with rank " << rank << " and sizes ";
+        for (int i = 0; i<rank; ++i)
           oss << dims[i] << ",";
         throw Exception(oss.str());
       }
@@ -425,23 +431,12 @@ class Dataspace : public Object
       return Dataspace(id, internal::NoIncRC());
     }
 
-    static Dataspace create_all()
-    {
-      hid_t id = H5Screate(H5S_SIMPLE);
-      if (id < 0)
-        throw Exception("error creating dataset");
-      herr_t err = H5Sselect_all(id);
-      if (err < 0)
-        throw Exception("error selecting the entire extent");
-      return Dataspace(id, internal::NoIncRC());
-    }
-
-    bool is_all() const
+    H5S_sel_type get_selection_type() const
     {
       H5S_sel_type sel = H5Sget_select_type(get_id());
       if (sel < 0)
         throw Exception("error geting select type");
-      return sel == H5S_SEL_ALL;
+      return sel;
     }
     
     int get_rank() const
@@ -452,23 +447,25 @@ class Dataspace : public Object
       return r;
     }
     
-    void get_dims(hsize_t *dims) const
+    int get_dims(hsize_t *dims) const
     {
       int r = H5Sget_simple_extent_dims(this->id, dims, NULL);
       if (r < 0)
         throw Exception("unable to get dataspace dimensions");
+      return r;
     }
 
-    std::vector<int> get_dims() const
+#if 0 // why would you ever want to be so inefficient
+    std::vector<hsize_t> get_dims() const
     {
-      std::vector<hsize_t> x(get_rank());
-      int r = H5Sget_simple_extent_dims(this->id, &x[0], NULL);
+      std::vector<hsize_t> ret(H5S_MAX_RANK);
+      int r = H5Sget_simple_extent_dims(this->id, &ret[0], NULL);
       if (r < 0)
         throw Exception("unable to get dataspace dimensions");
-      std::vector<int> ret(x.size());
-      for (int i=0; i<r; ++i) ret[i] = x[i];
+      ret.resize(r);
       return ret;
     }
+#endif
     
     bool is_simple() const
     {
@@ -518,11 +515,11 @@ class Dataspace : public Object
 };
 
 
-inline Dataspace create_dataspace(int dim0, int dim1 = 0, int dim2 = 0, int dim3 = 0, int dim4 = 0, int dim5 = 0)
+inline Dataspace create_dataspace(hsize_t dim0, hsize_t dim1 = 0, hsize_t dim2 = 0, hsize_t dim3 = 0, hsize_t dim4 = 0, hsize_t dim5 = 0)
 {
   enum { MAX_DIM = 6 };
   const hsize_t xa[MAX_DIM] = { (hsize_t)dim0, (hsize_t)dim1, (hsize_t)dim2, (hsize_t)dim3, (hsize_t)dim4, (hsize_t)dim5 };
-  hsize_t rank = 0;
+  int rank = 0;
   for (; rank<MAX_DIM; ++rank) { // find rank
     if (xa[rank] <= 0) break;
   }
@@ -684,7 +681,7 @@ class Attributes
       else throw Exception("error looking for attribute by name");
     }
 
-    int size() const
+    hsize_t size() const
     {
       hid_t objid = attributed_object.get_id();
       H5O_info_t info;
@@ -706,12 +703,6 @@ class Attributes
       T ret;
       get(name, ret);
       return ret;
-    }
-
-    template<class T>
-    void get(const std::string &name, T* values)
-    {
-      open(name).read(values);
     }
     
 #ifdef HDF_WRAPPER_HAS_BOOST
@@ -760,20 +751,21 @@ class Properties : protected Object
 
     Properties& chunked_with_estimated_size(const Dataspace &sp)
     {
-      std::vector<int> dims = sp.get_dims();
-      std::vector<hsize_t> cdims(dims.size());
-      for (int i=0; i<dims.size(); ++i)
+      hsize_t dims[H5S_MAX_RANK];
+      int r = sp.get_dims(dims);
+      hsize_t cdims[H5S_MAX_RANK];
+      for (int i=0; i<r; ++i)
       {
         hsize_t val = dims[i];
         hsize_t org_val = val;
-        val *= 0.1;
+        val = (hsize_t)(val * 0.1);
         if (val < 32.)
           val = 32;
         if (val > org_val)
           val = org_val;
         cdims[i] = val;
       }
-      return chunked((int)cdims.size(), &cdims[0]);
+      return chunked(r, cdims);
     }
 };
 
@@ -810,7 +802,7 @@ class Group : public Object
     }
 
     // number of links in the group
-    int size() const
+    hsize_t size() const
     {
       H5G_info_t info;
       herr_t res = H5Gget_info(this->id, &info);
@@ -820,7 +812,7 @@ class Group : public Object
     }
     
     // used to iterate over links in the group, up to size()
-    std::string get_link_name(int idx) const
+    std::string get_link_name(hsize_t idx) const
     {
       char buffer[4096];
       ssize_t n = H5Lget_name_by_idx(this->id, ".", H5_INDEX_NAME, H5_ITER_NATIVE, (hsize_t)idx, buffer, 4096, H5P_DEFAULT);
@@ -883,10 +875,10 @@ class Group : public Object
 */
 class iterator : public std::iterator<std::bidirectional_iterator_tag, std::string>
 {
-    int idx;
+    hssize_t idx;
     Group g;
     friend class Group;
-    iterator(int idx_, Group g_) : idx(idx_), g(g_) {}
+    iterator(hssize_t idx_, Group g_) : idx(idx_), g(g_) {}
   public:
     iterator()  : idx(std::numeric_limits<int>::max()) {}
     iterator& operator++() { ++idx; return *this; }
@@ -1092,9 +1084,8 @@ class Dataset : public Object
       return ds;
     }
     
-    // TODO: reverse order of filespace and memspace arguments, in agreement with the c-api
     template<class T>
-    void write(const Dataspace &file_space, const Dataspace &mem_space, const T* data)
+    void write(const Dataspace &mem_space, const Dataspace &file_space, const T* data)
     {
       write(mem_space, file_space.get_id(), data);
     }
@@ -1290,7 +1281,7 @@ struct h5traits<std::string>
 
   static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const std::string *values)
   {
-    int n = memspace.get_count();
+    hssize_t n = memspace.get_count();
     assert(n >= 1);
     std::vector<const char*> s(n);
     for (int i=0; i<n; ++i) s[i] = values[i].c_str();
@@ -1299,7 +1290,7 @@ struct h5traits<std::string>
 
   static inline void read(RW &rw, const Datatype &memtype, const Dataspace &memspace, std::string *values)
   {
-    int n = memspace.get_count();
+    hssize_t n = memspace.get_count();
     assert(n >= 1);
     assert(H5Tis_variable_str(memtype.get_id()));
 
@@ -1308,7 +1299,7 @@ struct h5traits<std::string>
 
     std::vector<char*> buffers(n);
     rw.read(&buffers[0]);
-    for (int i = 0; i < n; ++i)
+    for (hssize_t i = 0; i < n; ++i)
     {
       values[i].assign(buffers[i]);
     }

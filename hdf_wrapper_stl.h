@@ -16,9 +16,17 @@ enum { contiguous_mem = 1 };
 template<class iterator>
 inline Dataspace create_dataspace_stl(iterator begin, iterator end)
 {
-  std::vector<hsize_t> x;
-  std::copy(begin, end, std::back_insert_iterator<std::vector<hsize_t> >(x));
-  return Dataspace::create_nd(&x[0], x.size());
+  // TODO: better use H5S_MAX_RANK
+  hsize_t dims[H5S_MAX_RANK];
+  int i = 0;
+  for (; begin != end; ++begin)
+  {
+    dims[i++] = *begin;
+
+    if (i >= H5S_MAX_RANK)
+      throw Exception("error creating dataspace: provided range is too large");
+  }
+  return Dataspace::create_nd(dims, i);
 }
 
 
