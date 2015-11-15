@@ -3,8 +3,14 @@ project (hdf_wrapper_test)
 
 include_directories("${PROJECT_BINARY_DIR}/../..")
 
-find_package(HDF5)
-find_package(Boost)
+set (HDF5_INCLUDE_DIRS "" CACHE PATH "Path to Hdf5 include dir")
+set (HDF5_LIBRARY_DIRS "" CACHE PATH "Path to Hdf5 library dir")
+set (HDF5_LIBRARIES "" CACHE FILEPATH "The Hdf5 library file")
+
+if (NOT (HDF5_INCLUDE_DIRS AND HDF5_LIBRARY_DIRS AND HDF5_LIBRARIES))
+    find_package(HDF5 REQUIRED)
+endif()
+find_package(Boost REQUIRED)
 
 include_directories(${HDF5_INCLUDE_DIRS})
 include_directories(${Boost_INCLUDE_DIRS})
