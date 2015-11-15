@@ -403,13 +403,15 @@ class Dataspace : public Object
     Dataspace(hid_t id, internal::NoIncRC) : Object(id) {}
     Dataspace(hid_t id, internal::IncRC) : Object(id, internal::IncRC()) {}
   public:
+    Dataspace() : Object() {}
+
     virtual ~Dataspace()
     {
       if (this->id == H5S_ALL)
         this->id = -1;
     }
 
-    static Dataspace create_nd(const hsize_t* dims, int rank)
+    static Dataspace create_simple(int rank, const hsize_t* dims)
     {
       hid_t id = H5Screate_simple(rank, dims, NULL);
       if (id < 0)
@@ -454,18 +456,6 @@ class Dataspace : public Object
         throw Exception("unable to get dataspace dimensions");
       return r;
     }
-
-#if 0 // why would you ever want to be so inefficient
-    std::vector<hsize_t> get_dims() const
-    {
-      std::vector<hsize_t> ret(H5S_MAX_RANK);
-      int r = H5Sget_simple_extent_dims(this->id, &ret[0], NULL);
-      if (r < 0)
-        throw Exception("unable to get dataspace dimensions");
-      ret.resize(r);
-      return ret;
-    }
-#endif
     
     bool is_simple() const
     {
@@ -475,7 +465,7 @@ class Dataspace : public Object
       return r > 0;
     }
     
-    hssize_t get_count() const
+    hssize_t get_npoints() const
     {
       hssize_t r = H5Sget_simple_extent_npoints(this->id);
       if (r <= 0)
@@ -513,21 +503,6 @@ class Dataspace : public Object
       return bool(result);
     }
 };
-
-
-inline Dataspace create_dataspace(hsize_t dim0, hsize_t dim1 = 0, hsize_t dim2 = 0, hsize_t dim3 = 0, hsize_t dim4 = 0, hsize_t dim5 = 0)
-{
-  enum { MAX_DIM = 6 };
-  const hsize_t xa[MAX_DIM] = { (hsize_t)dim0, (hsize_t)dim1, (hsize_t)dim2, (hsize_t)dim3, (hsize_t)dim4, (hsize_t)dim5 };
-  int rank = 0;
-  for (; rank<MAX_DIM; ++rank) { // find rank
-    if (xa[rank] <= 0) break;
-  }
-  if (rank <= 0)
-    throw Exception("nd dataspace with rank 0 not permitted, use create_scalar()");
-  return Dataspace::create_nd(xa, rank);
-}
-
 
 
 class Attribute : public Object
@@ -1005,17 +980,17 @@ inline File Object::get_file() const
 
 enum DsCreationFlags
 {
-  NONE = 0,
-  COMPRESSED = 1,
-  CHUNKED = 2,
+  CREATE_DS_0 = 0,
+  CREATE_DS_COMPRESSED = 1,
+  CREATE_DS_CHUNKED = 2,
 #ifndef HDF_WRAPPER_DS_CREATION_DEFAULT_FLAGS
   #ifdef H5_HAVE_FILTER_DEFLATE
-    DEFAULT_FLAGS = COMPRESSED
+    CREATE_DS_DEFAULT = CREATE_DS_COMPRESSED
   #else
-    DEFAULT_FLAGS = NONE
+    CREATE_DS_DEFAULT = CREATE_DS_0
   #endif
 #else
-  DEFAULT_FLAGS = HDF_WRAPPER_DS_CREATION_DEFAULT_FLAGS
+  CREATE_DS_DEFAULT = HDF_WRAPPER_DS_CREATION_DEFAULT_FLAGS
 #endif
 };
 
@@ -1065,25 +1040,13 @@ class Dataset : public Object
         throw Exception("error creating dataset: "+name);
       return Dataset(id, internal::NoIncRC());
     }
-
+   
     template<class T>
-    static Dataset create_simple(Group group, const std::string &name, const Dataspace &sp, const T* data, DsCreationFlags flags = DEFAULT_FLAGS, const Datatype &disktype = get_disktype<T>())
+    static Dataset create(Group group, const std::string &name, const Dataspace &space, DsCreationFlags flags = CREATE_DS_DEFAULT)
     {
-      Dataset ds = Dataset::create(group, name, disktype, sp, Dataset::create_creation_properties(sp, flags));
-      if (data)
-        ds.write<T>(data);
-      return ds;
+      return Dataset::create(group, name, get_disktype<T>(), space, create_creation_properties(space, flags));
     }
 
-    template<class T>
-    static Dataset create_scalar(Group group, const std::string &name, const T& data, const Datatype &disktype = get_disktype<T>())
-    {
-      Dataspace sp = Dataspace::create_scalar();
-      Dataset ds = Dataset::create(group, name, disktype, sp, Dataset::create_creation_properties(sp, NONE));
-      ds.write<T>(&data);
-      return ds;
-    }
-    
     template<class T>
     void write(const Dataspace &mem_space, const Dataspace &file_space, const T* data)
     {
@@ -1100,9 +1063,9 @@ class Dataset : public Object
     static Properties create_creation_properties(const Dataspace &sp, DsCreationFlags flags)
     {
       Properties prop(H5P_DATASET_CREATE);
-      if (flags & COMPRESSED)
+      if (flags & CREATE_DS_COMPRESSED)
         prop.deflate();
-      if (flags & CHUNKED || flags & COMPRESSED)
+      if (flags & CREATE_DS_CHUNKED || flags & CREATE_DS_COMPRESSED)
         prop.chunked_with_estimated_size(sp);
       return prop;
     }
@@ -1281,7 +1244,7 @@ struct h5traits<std::string>
 
   static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const std::string *values)
   {
-    hssize_t n = memspace.get_count();
+    hssize_t n = memspace.get_npoints();
     assert(n >= 1);
     std::vector<const char*> s(n);
     for (int i=0; i<n; ++i) s[i] = values[i].c_str();
@@ -1290,7 +1253,7 @@ struct h5traits<std::string>
 
   static inline void read(RW &rw, const Datatype &memtype, const Dataspace &memspace, std::string *values)
   {
-    hssize_t n = memspace.get_count();
+    hssize_t n = memspace.get_npoints();
     assert(n >= 1);
     assert(H5Tis_variable_str(memtype.get_id()));
 
@@ -1326,7 +1289,7 @@ struct h5traits<char[n]>
 
   static inline void write(RW &rw, const Datatype &memtype, const Dataspace &memspace, const CharArray *values)
   {
-    std::vector<const char*> s(memspace.get_count());
+    std::vector<const char*> s(memspace.get_npoints());
     for (int i=0; i<s.size(); ++i) s[i] = values[i];  // because i don't know how to deal with an array of static char-arrays
     rw.write(&s[0]);
   }
@@ -1364,9 +1327,10 @@ struct h5traits_of
 
 
 /*
-Here is this super ugly code using "global", i.e. static variables. Using hid_t as static
-variable type because no destructor calls are allowed because they would call
-hdf api functions when the hdf lib is unloaded already.
+Here is this super ugly code which caches the result of the construction of HDF5 
+types in static, i.e. global variables. The mechanism uses hid_t as static
+variable type, because using Datatype would result in destructor calls,
+and concomitant api calls when the hdf lib is unloaded already.
 */
 namespace internal
 {
