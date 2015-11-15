@@ -1,3 +1,28 @@
+/*
+Copyright (c) 2015 Michael Welter
+
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+
 #ifndef _HDF_WRAPPER_H
 #define _HDF_WRAPPER_H
 
@@ -411,7 +436,7 @@ class Dataspace : public Object
         this->id = -1;
     }
 
-    static Dataspace create_simple(int rank, const hsize_t* dims)
+    static Dataspace simple(int rank, const hsize_t* dims)
     {
       hid_t id = H5Screate_simple(rank, dims, NULL);
       if (id < 0)
@@ -425,7 +450,7 @@ class Dataspace : public Object
       return Dataspace(id, internal::NoIncRC());
     }
     
-    static Dataspace create_scalar() 
+    static Dataspace scalar() 
     {
       hid_t id = H5Screate(H5S_SCALAR);
       if (id < 0)
@@ -433,6 +458,24 @@ class Dataspace : public Object
       return Dataspace(id, internal::NoIncRC());
     }
 
+    /*
+      Arguments specify dimensions. The rank is determined from the first argument that is zero.
+      E.g. create_dataspace(5, 6)  and create_dataspace(5, 6, 0, 10) both result in a dataspace
+      of rank two. Any arguments following a zero are ignored.
+    */
+    static Dataspace simple_dims(hsize_t dim0, hsize_t dim1 = 0, hsize_t dim2 = 0, hsize_t dim3 = 0, hsize_t dim4 = 0, hsize_t dim5 = 0)
+    {
+      enum { MAX_DIM = 6 };
+      const hsize_t xa[MAX_DIM] = { (hsize_t)dim0, (hsize_t)dim1, (hsize_t)dim2, (hsize_t)dim3, (hsize_t)dim4, (hsize_t)dim5 };
+      int rank = 0;
+      for (; rank<MAX_DIM; ++rank) { // find rank
+        if (xa[rank] <= 0) break;
+      }
+      if (rank <= 0)
+        throw Exception("nd dataspace with rank 0 not permitted, use create_scalar()");
+      return Dataspace::simple(rank, xa);
+    }  
+    
     H5S_sel_type get_selection_type() const
     {
       H5S_sel_type sel = H5Sget_select_type(get_id());
@@ -603,7 +646,7 @@ class Attributes
     template<class T>
     void create(const std::string &name, const T &value)
     {
-      auto sp = Dataspace::create_scalar();
+      auto sp = Dataspace::scalar();
       create<T>(name, sp).write(&value);
     }
 
@@ -645,7 +688,7 @@ class Attributes
     template<class T>
     void set(const std::string &name, const T &value)
     {
-      set(name, Dataspace::create_scalar(), &value);
+      set(name, Dataspace::scalar(), &value);
     }
     
     bool exists(const std::string &name) const
@@ -1145,12 +1188,14 @@ inline Datatype get_memtype()
 {
   // writing sizeof(T)==0 seems to work for gcc. just writing false always causes an error????!
   static_assert (sizeof(T)==0, "specialize me!");
+  return Datatype();
 }
 
 template<class T>
 inline Datatype get_disktype()
 {
   static_assert (sizeof(T)==0, "specialize me!");
+  return Datatype();
 }
 
 
@@ -1360,6 +1405,129 @@ inline Datatype get_memtype()
 }
 
 } // namespace h5cpp
+
+
+
+namespace h5cpp
+{
+
+/*==================================================
+*          some free functions
+*===================================================*/
+
+#if 0
+template<class iterator>
+inline Dataspace create_dataspace_from_iter(iterator begin, iterator end)
+{
+  hsize_t dims[H5S_MAX_RANK];
+  int i = 0;
+  for (; begin != end; ++begin)
+  {
+    dims[i++] = *begin;
+    
+    if (i >= H5S_MAX_RANK)
+      throw Exception("error creating dataspace: provided range is too large");
+  }
+  return Dataspace::simple(i, dims);
+}
+
+template<class T, class A>
+inline Dataspace create_dataspace_simple(const std::vector<T, A> &dims)
+{
+  assert(dims.size() > 0);
+  return Dataspace::simple(dims.size(), &dims[0]);
+}
+
+
+template<class T, class A>
+inline void get_dims(const Dataspace &sp, std::vector<T, A> &ret)
+{
+  hsize_t dims[H5S_MAX_RANK];
+  int r = sp.get_dims(dims);
+  ret.resize(r);
+  std::copy(dims, dims + r, ret.begin());
+}
+#endif
+/*--------------------------------------------------
+*            datasets
+* ------------------------------------------------ */
+
+
+
+template<class T>
+inline Dataset create_dataset(Group group, const std::string &name, const Dataspace &sp, const T* data = nullptr, DsCreationFlags flags = CREATE_DS_DEFAULT)
+{
+  Dataset ds = Dataset::create(group, name, get_disktype<T>(), sp, Dataset::create_creation_properties(sp, flags));
+  if (data != nullptr)
+    ds.write<T>(data);
+  return ds;
+}
+
+template<class T>
+inline Dataset create_dataset_scalar(Group group, const std::string &name, const T& data)
+{
+  Dataspace sp = Dataspace::scalar();
+  Dataset ds = Dataset::create(group, name, get_disktype<T>(), sp, Dataset::create_creation_properties(sp, CREATE_DS_0));
+  ds.write<T>(&data);
+  return ds;
+}
+
+
+template<class T, class A>
+inline Dataset create_dataset(Group group, const std::string &name, const std::vector<T, A> &data, DsCreationFlags flags = CREATE_DS_DEFAULT)
+{
+  return create_dataset(group, name, Dataspace::simple_dims(data.size()), &data[0], flags);
+}
+
+
+template<class T, class A>
+inline void read_dataset(const Dataset ds, std::vector<T, A> &ret)
+{
+  Dataspace sp = ds.get_dataspace();
+  ret.resize(sp.get_npoints());
+  ds.read(&ret[0]);
+}
+
+
+/*--------------------------------------------------
+ *            Attributes
+ * ------------------------------------------------ */
+
+template<class T, class A>
+inline void set_array(Attributes attrs, const std::string &name, const std::vector<T, A> &data)
+{
+  attrs.set(name, Dataspace::simple_dims(data.size()), &data[0]);
+}
+
+template<class T>
+inline void set_array(Attributes attrs, const std::string &name, const T* data, hsize_t count)
+{
+  attrs.set(name, Dataspace::simple_dims(count), data);
+}
+
+template<class T>
+inline void set(Attributes attrs, const std::string &name, const T &value)
+{
+  attrs.set(name, Dataspace::scalar(), &value);
+}
+
+template<class T, class A>
+inline void get_array(Attributes attrs, const std::string &name, std::vector<T, A> &ret)
+{
+  Attribute a = attrs.open(name);
+  ret.resize(a.get_dataspace().get_npoints());
+  a.read<T>(&ret[0]);
+}
+
+template<class T>
+inline void get(Attributes attrs, const std::string &name, T &value)
+{
+  Attribute a = attrs.open(name);
+  assert(a.get_dataspace().get_npoints() == 1);
+  a.read<T>(&value);
+}
+
+}
 
 
 #endif

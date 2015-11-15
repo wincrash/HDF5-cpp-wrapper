@@ -6,7 +6,6 @@
 #include <list>
 
 #include "hdf_wrapper.h"
-#include "hdf_wrapper_stl.h"
 
 using namespace std;
 namespace h5 = h5cpp;
@@ -80,27 +79,28 @@ void WriteFile()
   h5::Group g3 = root.open_group("second_group").create_group("third_group");
 
   // dataspaces
-  h5::Dataspace sp_scalar = h5::Dataspace::create_scalar();
+  h5::Dataspace sp_scalar = h5::Dataspace::scalar();
   assert(sp_scalar.is_valid());
-  h5::Dataspace sp1       = h5::create_dataspace(10,20,30); // three dimensional dataset with dimensions 10 x 20 x 30
+  h5::Dataspace sp1       = h5::Dataspace::simple_dims(10,20,30); // three dimensional dataset with dimensions 10 x 20 x 30
   assert(sp1.is_valid());
   hsize_t dims[3] = { 10, 20, 30};
-  h5::Dataspace sp2       = h5::Dataspace::create_simple(3, dims);
+  h5::Dataspace sp2       = h5::Dataspace::simple(3, dims);
   assert(sp2.is_valid());
+  #if 0
   vector<int> dims_vec; 
   dims_vec.push_back(10);
   dims_vec.push_back(20);
   dims_vec.push_back(30);
   // following two create function are found in hdf_wrapper_stl.h
-  h5::Dataspace sp5       = h5::create_dataspace_from_range(dims_vec); // calls dims_vec.begin(), dims_vec.end() 
+  h5::Dataspace sp5       = h5::Dataspace::(dims_vec); // calls dims_vec.begin(), dims_vec.end() 
   assert(sp5.is_valid());
   h5::Dataspace sp6       = h5::create_dataspace_from_iter((hsize_t*)dims, dims+3); // good old pointer arithmetic
   assert(sp6.is_valid());
   // TODO: check if these dataspaces are okay
-  
+#endif
   // array attributes
   int static_ints[6] = { 1, 2, 3, 4, 5, 6 };
-  g3.attrs().create("ints", h5::create_dataspace(2,3), static_ints);
+  g3.attrs().create("ints", h5::Dataspace::simple_dims(2,3), static_ints);
 
   // variable length string attributes
   const char* strings1[] = {
@@ -108,14 +108,14 @@ void WriteFile()
     "string2 long",
     "string3 very long"
   };
-  g3.attrs().create("strings1", h5::create_dataspace(3), strings1); 
+  g3.attrs().create("strings1", h5::Dataspace::simple_dims(3), strings1); 
   
   // using the wrapper for stl constainers.
   vector<string> strings2;
   strings2.push_back("test");
   strings2.push_back("string");
   strings2.push_back("array attrib");
-  h5::set_attribute(g3.attrs(), "strings2", strings2); // should use the overloaded function for std::vector
+  h5::set_array(g3.attrs(), "strings2", strings2); // should use the overloaded function for std::vector
   
   cout << "-- datasets --" << endl;
   
@@ -123,8 +123,7 @@ void WriteFile()
   for(int i=0; i<data.size(); ++i)
     data[i] = (float)i*i;
   
-  vector<int> sizes(1, (int)data.size());  // one-dimensional
-  h5::Dataset ds = h5::create_dataset_simple(g, "testds", h5::create_dataspace_from_range(sizes), &data[0]);
+  h5::Dataset ds = h5::create_dataset(g, "testds", h5::Dataspace::simple_dims(data.size()), &data[0]);
   ds.attrs().create("someAttr", 7);
   
   // make nice data in memory
@@ -138,9 +137,9 @@ void WriteFile()
   // most general data writing
   h5::Dataset ds2 = h5::Dataset::create(g, "bigdata", 
 					h5::get_disktype<double>(), 
-					sp6,
-					h5::Dataset::create_creation_properties(sp6, h5::CREATE_DS_COMPRESSED));
-  ds2.write(sp6, sp6, &bigdata[0]);
+                                        sp2,
+                                        h5::Dataset::create_creation_properties(sp2, h5::CREATE_DS_COMPRESSED));
+  ds2.write(sp2, sp2, &bigdata[0]);
 
   
   h5::create_dataset(root, "dataset_from_range_vector", data); // automatic determination if contiguous, according to h5cpp::internal::contiguous_storage_traits class
@@ -152,7 +151,7 @@ void WriteFile()
 
   cout << "-- hyperslab selection --" << endl;
   { // selection test
-    h5::Dataspace sp = h5::create_dataspace(5, 2);
+    h5::Dataspace sp = h5::Dataspace::simple_dims(5, 2);
     h5::Dataset ds = h5::Dataset::create<int>(root, "select_test_ds", sp);
     hsize_t offset[2] = { 0, 0 };
     hsize_t stride[2] = { 1, 1 };
@@ -162,7 +161,7 @@ void WriteFile()
     
     int memdata[] = { 1, 2, 3, 4 };
 
-    h5::Dataspace memsp = h5::create_dataspace(4);
+    h5::Dataspace memsp = h5::Dataspace::simple_dims(4);
     ds.write(memsp, sp, &memdata[0]);
 
     offset[0] = 1;
@@ -212,7 +211,7 @@ void ReadFile()
   cout << endl;
   
   // read n-dimensional attribute into vector
-  vector<string> string_vec; h5::get_attribute(string_vec, attrs, "strings1");
+  vector<string> string_vec; h5::get_array(attrs, "strings1", string_vec);
 
   cout << "string_vec (" << string_vec.size() << ") ";
   for (int i=0; i<string_vec.size(); ++i)
@@ -226,9 +225,10 @@ void ReadFile()
 
     // check reading the dataspace dimensions first
     h5::Dataspace sp = ds.get_dataspace();
-    vector<int> dims; h5::get_dims(dims, sp);  // resizes the vector and writes to the memory block following the first element
-    cout << "dataset rank = " << dims.size() << ", dims = ";
-    for (int i = 0; i < dims.size(); ++i)
+    hsize_t dims[H5S_MAX_RANK];
+    int rank = sp.get_dims(dims);
+    cout << "dataset rank = " << rank << ", dims = ";
+    for (int i = 0; i < rank; ++i)
     {
       cout << dims[i] << " ";
     }
@@ -248,7 +248,7 @@ void ReadFile()
 
     { // check reading to vector
       ds = root.open_dataset("dataset_from_list");
-      vector<int> data; h5::read_dataset<int>(data, ds);
+      vector<int> data; h5::read_dataset<int>(ds, data);
     }
   }
 
@@ -264,8 +264,8 @@ void ReadFile()
   ds = file.root().open_dataset("select_test_ds");
   hsize_t dims[H5S_MAX_RANK];
   ds.get_dataspace().get_dims(dims);
-  printf("dims = (%i, %i)\n", dims[0], dims[1]);
-  vector<int> data; h5::read_dataset<int>(data, ds);
+  cout << "dims = (" << dims[0] << ", " << dims[1] << ")" << endl;
+  vector<int> data; h5::read_dataset<int>(ds, data);
   const int NX = 5, NY = 2;
   for (int y = 0; y < NY; ++y)
   for (int x = 0; x < NX; ++x)
