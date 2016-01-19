@@ -911,7 +911,7 @@ class iterator : public std::iterator<std::bidirectional_iterator_tag, std::stri
     iterator& operator--() { --idx; return *this; }
     iterator  operator++(int) { auto tmp = *this; ++idx; return tmp; }
     iterator  operator--(int) { auto tmp = *this; --idx; return tmp; }
-    bool operator==(const iterator &other) const { return other.idx == idx; assert(other.g.is_same(g)); }
+    bool operator==(const iterator &other) const { assert(other.g.is_same(g)); return other.idx == idx; }
     bool operator!=(const iterator &other) const { return !(*this == other); }
     std::string dereference() const
     {
@@ -941,9 +941,9 @@ class File : public Object
     
     /*
       w = create or truncate existing file
-      a = append to file or create new file
-      r = read only; file must exist
       w- = new file; file must not already exist
+      a = open file or create/overwrite file if not an hdf5 file
+      r = read only; file must exist
       r+ = read/write; file must exist
     */
     File(const std::string &name, const std::string openmode = "w") : Object()
@@ -962,7 +962,7 @@ class File : public Object
           call_open = true;
           flags     = H5F_ACC_RDWR;
         }
-        else // create file
+        else // create file or clear existing file!
         {
           call_open = false;
           flags     = H5F_ACC_TRUNC;
@@ -1014,6 +1014,15 @@ class File : public Object
       herr_t err = H5Fflush(this->id, H5F_SCOPE_LOCAL);
       if (err < 0)
         throw Exception("unable to flush file");
+    }
+
+    bool is_readonly() const
+    {
+      unsigned int intent;
+      herr_t err = H5Fget_intent(get_id(), &intent);
+      if (err < 0)
+        throw Exception("error getting file intent");
+      return intent == H5F_ACC_RDONLY;
     }
 };
 
