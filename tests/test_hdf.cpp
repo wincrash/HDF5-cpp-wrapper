@@ -60,6 +60,7 @@ void WriteFile()
   a.create("to_be_deleted", "really gone? (it is okay if you see this)");
   a.set<string>("attrib_overwrite_test1", "erased and recreated!");
   a.set<int>("attrib_overwrite_test2", 3); // should just write into the existing space
+  a.set<unsigned long>("longer int type", 1234567890);
   
   // try to make a group and set some attributes
   h5::Group g = root.create_group("testing_the_group");
@@ -199,6 +200,7 @@ void ReadFile()
  
   string s = root.attrs().get<string>("c_str_attr");
   cout << "string attribute: " << s << endl;
+  cout << "longer int type: " << root.attrs().get<unsigned long>("longer int type") << endl;
   
   h5::Attributes attrs = root.open_group("second_group/third_group").attrs();
   h5::Attribute a = attrs.open("ints");

@@ -28,6 +28,7 @@ docs/_build/
 # PyBuilder
 target/
 
+htmldocs
 
 # Compiled Object files
 *.slo
